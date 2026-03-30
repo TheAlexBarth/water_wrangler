@@ -256,8 +256,21 @@ def load_baycast(
 
 
 ######################
-#MARK: Shapefiles
+#MARK: WDFT
 ######################
+
+# def query_station_meta(
+        
+# )
+
+# def query_station_data(
+#         station_id: str,
+#         parameter_code: str,
+#         start_date: str | dt.date | dt.datetime | pd.Timestamp = None,
+#         end_date: str | dt.date | dt.datetime | pd.Timestamp = None,
+# )
+
+
 import json
 import geopandas as gpd
 from shapely.geometry import shape, box, Point

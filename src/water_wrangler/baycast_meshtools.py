@@ -1,9 +1,12 @@
+from zipfile import Path
+
 import rasterio
 from scipy.spatial import cKDTree
 from rasterio.warp import reproject, Resampling
 from rasterio.transform import Affine
 import numpy as np
 from importlib.resources import files, as_file
+from pathlib import Path
 import xarray as xr
 
 import math
@@ -430,8 +433,8 @@ class MeshMixin:
         This is required because wheels may store package data inside a zip-like
         structure, and rasterio expects a real on-disk path.
         """
-        return as_file(files("water_wrangler.data").joinpath(filename))
-
-   
+        rsc = files('water_wrangler') / "data" /filename
+        with as_file(rsc) as p:
+            yield Path(p)
             
     #endregion MeshTool -------------------------------
