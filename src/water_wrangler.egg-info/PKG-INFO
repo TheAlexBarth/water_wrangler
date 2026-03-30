@@ -1,0 +1,20 @@
+Metadata-Version: 2.4
+Name: water_wrangler
+Version: 0.1.0
+Summary: BAYCAST xarray wrapper and visualization utilities for SCHISM outputs
+Author: Dr. Alex Barth
+License: MIT3.0
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+Requires-Dist: numpy>=1.23
+Requires-Dist: xarray>=2023.1.0
+Requires-Dist: pandas>=1.5
+Requires-Dist: scipy>=1.9
+Requires-Dist: matplotlib>=3.6
+Requires-Dist: cmocean>=3.0
+Requires-Dist: rasterio>=1.3
+Provides-Extra: dev
+Requires-Dist: ipykernel; extra == "dev"
+Requires-Dist: pytest; extra == "dev"
+Requires-Dist: black; extra == "dev"
+Requires-Dist: ruff; extra == "dev"

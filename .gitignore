@@ -1,0 +1,5 @@
+local_tests/
+.ipynb
+!src/
+*.ipynb
+.vscode/
