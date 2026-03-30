@@ -7,6 +7,7 @@ from rasterio.transform import Affine
 import numpy as np
 from importlib.resources import files, as_file
 from pathlib import Path
+from contextlib import contextmanager
 import xarray as xr
 
 import math
@@ -424,7 +425,7 @@ class MeshMixin:
 
     
 
-    
+    @contextmanager
     def _data_resource_path(self, filename: str):
         
         """
