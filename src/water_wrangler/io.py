@@ -211,47 +211,41 @@ def load_baycast(
             )
 
         ds = xr.open_mfdataset(file_paths, data_vars='minimal', compat = 'no_conflicts', **open_kwargs)
-    
-    
-    temp_files: List[str] = []
-    sess = requests.Session()
-    try:
-        for dt_val in tqdm(expected_files.keys()):
-            url = _midgewater_url(product, dimension, type_2d, dt_val)
-            resp = sess.get(url)
-            if resp.status_code != 200:
-                for tmp in temp_files:
-                    try:
-                        os.remove(tmp)
-                    except OSError:
-                        pass
-                    raise RuntimeError(
-                        f"Could not downlaod BAYCAST for {dt_val.date()}"
-                        f"from {url}"
-                    )
-                
-            with tempfile.NamedTemporaryFile(delete=False, suffix = '.nc') as tmp:
-                tmp.write(resp.content)
-                temp_files.append(tmp.name)
+    else:        
+        temp_files: List[str] = []
+        sess = requests.Session()
+        try:
+            for dt_val in tqdm(expected_files.keys()):
+                url = _midgewater_url(product, dimension, type_2d, dt_val)
+                resp = sess.get(url)
+                if resp.status_code != 200:
+                    for tmp in temp_files:
+                        try:
+                            os.remove(tmp)
+                        except OSError:
+                            pass
+                        raise RuntimeError(
+                            f"Could not downlaod BAYCAST for {dt_val.date()}"
+                            f"from {url}"
+                        )
+                    
+                with tempfile.NamedTemporaryFile(delete=False, suffix = '.nc') as tmp:
+                    tmp.write(resp.content)
+                    temp_files.append(tmp.name)
 
-        if not temp_files:
-            raise FileNotFoundError(
-                "No BAYCAST files could be downloaded for the requested range."
-            )
-        
-        ds = xr.open_mfdataset(temp_files, data_vars="minimal", compat = 'no_conflicts', **open_kwargs)
+            if not temp_files:
+                raise FileNotFoundError(
+                    "No BAYCAST files could be downloaded for the requested range."
+                )
+            
+            ds = xr.open_mfdataset(temp_files, data_vars="minimal", compat = 'no_conflicts', **open_kwargs)
 
-        if convert_time and "time" in ds:
-            time_utc = pd.DatetimeIndex(ds["time"].values).tz_localize('UTC')
-            time_central = time_utc.tz_convert("America/Chicago").tz_localize(None)
-            ds = ds.assign_coords(time=("time", time_central))
-        
-    finally:
-        for tmp in temp_files:
-            try:
-                os.remove(tmp)
-            except OSError:
-                pass
+            if convert_time and "time" in ds:
+                time_utc = pd.DatetimeIndex(ds["time"].values).tz_localize('UTC')
+                time_central = time_utc.tz_convert("America/Chicago").tz_localize(None)
+                ds = ds.assign_coords(time=("time", time_central))
+        except Exception as e:
+            print(f"Error during BAYCAST loading: {e}")
     return BaycastDataset(ds)
 
 
