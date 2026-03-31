@@ -95,6 +95,7 @@ class VizMixin:
                   zorder = 3, 
                   figsize = (10,10),
                   shade = True,
+                  title = None,
                   mesh_kwargs=None
                   ):
         
@@ -102,6 +103,8 @@ class VizMixin:
             mesh_kwargs = {}
 
         shade = mesh_kwargs.pop('shade', shade)
+        if title is None:
+            mesh_kwargs.pop('title', None)
 
         if ax is None:
             # Generate plot
@@ -129,6 +132,8 @@ class VizMixin:
             ax.triplot(self.x, self.y, self.trimesh, color='k', lw=0.25, zorder=zorder)
 
         plt.axis('scaled')
+        if title is not None:
+            ax.set_title(title)
         return ax
 
 
@@ -262,6 +267,7 @@ class VizMixin:
     #region \- quiver --------------------------------------------------
     def show_quiver(self, 
                     tind=-1,
+                    custom_title = None,
                     ax=None,
                     space_factor=100, scale=22, width=0.002, headwidth=4,
                     pivot='tail', alpha=0.8,
@@ -363,6 +369,8 @@ class VizMixin:
         if show_bnd:
             self.show_boundary(ax = ax, zorder = 4, **bnd_kwargs)
         plt.axis('scaled')
+        if custom_title is not None:
+            ax.set_title(custom_title)
         return ax
          
     #endregion quiver -----------------------------------------------
@@ -538,6 +546,7 @@ class VizMixin:
         display=True,
         folder=".",
         gif_filename=None,
+        custom_title = None,
         frame_prefix="frame",
         # kwargs passthrough
         plot_kwargs=None,
@@ -596,14 +605,14 @@ class VizMixin:
 
                 # --- render frame ---
                 if mode == "var":
-                    ax = self.show_var(variable, tind=ti, dpi=dpi, **plot_kwargs)
+                    ax = self.show_var(variable, tind=ti, dpi=dpi, custom_title=custom_title **plot_kwargs)
 
                 elif mode == "quiver":
                     # Build a consistent canvas
-                    fig, ax = plt.subplots(1, 1, figsize=plot_kwargs.get("figsize", (10, 10)), dpi=dpi)
+                    fig, ax = plt.subplots(1, 1, figsize=plot_kwargs.get("figsize", (10, 10)), dpi=dpi, **plot_kwargs)
 
                     # Now the actual thing requested: pass through show_quiver
-                    ax = self.show_quiver(tind=ti if ti is not None else -1, ax=ax, **quiver_kwargs)
+                    ax = self.show_quiver(tind=ti if ti is not None else -1, ax=ax, custom_title=custom_title, **quiver_kwargs)
 
                 # --- write intermediate PNG ---
                 png_path = os.path.join(frame_dir, f"{frame_prefix}_{i:05d}.png")
@@ -686,6 +695,7 @@ class VizMixin:
         save_frames=False,
         save_gif=True,
         display=True,
+        custom_title = None,
         quiver_kwargs=None,
         **plot_kwargs,
     ):
@@ -705,6 +715,7 @@ class VizMixin:
             save_frames=save_frames,
             save_gif=save_gif,
             display=display,
+            custom_title=custom_title,
             quiver_kwargs=quiver_kwargs or {},
             plot_kwargs=plot_kwargs,
         )

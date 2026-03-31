@@ -2,6 +2,7 @@ from zipfile import Path
 
 import rasterio
 from scipy.spatial import cKDTree
+from scipy import ndimage
 from rasterio.warp import reproject, Resampling
 from rasterio.transform import Affine
 import numpy as np
@@ -127,22 +128,33 @@ class MeshMixin:
         pw = trans.a * math.cos(math.radians(trans.f)) * math.pi / 180 * 6371008.8 #pixel width
 
         pixel_dist = int(neighbor_dist / pw)
+        
         if pixel_dist > 0:
-            print(f"Using soft mask with {neighbor_dist}m inclusion")
+            print(f"Using soft mask with {neighbor_dist}m inclusion distance")
+            R = int(pixel_dist)
 
+            # binary mask
+            m = (raster > 0)
 
+            # Use a disk footprint (closer to "distance" than a square)
+            yy, xx = np.ogrid[-R:R+1, -R:R+1]
+            footprint = (xx*xx + yy*yy) <= (R*R)
 
-        R = int(pixel_dist)
-        for dr in range(-R, R + 1):
-            rr = rows + dr
+            
+            m = (raster > 0)
+            # distance in pixels from each pixel to nearest True pixel
+            dist = ndimage.distance_transform_edt(~m)  # distance to mask
+            m_soft = dist <= R
 
-            for dc in range(-R, R + 1):
-                cc = cols + dc
-                inside = (
-                    (rr >= 0) & (rr < height) &
-                    (cc >= 0) & (cc < width)
-                )
-                keep[inside] |= raster[rr[inside], cc[inside]] > 0
+            # sample once for all nodes (with bounds check)
+            inside = (rows >= 0) & (rows < height) & (cols >= 0) & (cols < width)
+            keep = np.zeros(xs.size, dtype=bool)
+            keep[inside] = m_soft[rows[inside], cols[inside]]
+        else:
+            # hard mask (no neighbor expansion)
+            inside = (rows >= 0) & (rows < height) & (cols >= 0) & (cols < width)
+            keep = np.zeros(xs.size, dtype=bool)
+            keep[inside] = raster[rows[inside], cols[inside]] > 0
 
 
         idx = np.where(keep)[0]
