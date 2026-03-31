@@ -104,13 +104,6 @@ class MeshMixin:
                 crs = None
         else:
             raise ValueError('must provide mask_file or mask')
-
-                
-        if crs is not None and crs.to_string().lower().find("4326") == -1:
-                raise ValueError(
-                    f"Mask CRS {crs} does not appear to be EPSG:4326 / WGS84"
-                )
-
         
         xs = np.asarray(self.lon.values)
         ys = np.asarray(self.lat.values)
