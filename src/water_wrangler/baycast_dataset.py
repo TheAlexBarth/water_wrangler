@@ -11,7 +11,7 @@ class BaycastDataset(MeshMixin, VizMixin):
     A BAYCAST specific wrapper for xarray.Dataset with BAYCAST mesh tools and plotting
     """
 
-    def __init__(self, ds: xr.Dataset):
+    def __init__(self, ds: xr.Dataset, assign_bathy = True, assign_tri = True, convert_time = False, tz = 'UTC'):
 
         # Underlying actual Dataset
         self.ds = ds
@@ -52,8 +52,39 @@ class BaycastDataset(MeshMixin, VizMixin):
             self.dim = '3D'
         else:
             self.dim = '2D'
-        self._assign_bathybnd()
-        self._assign_tri_attrs()
+        
+        if assign_bathy:
+            self.has_bathy = True
+            self._assign_bathybnd()
+        else:
+            self.has_bathy = False
+        if assign_tri:
+            self._assign_tri_attrs()
+            self.has_tri = True
+        else:
+            self.has_tri = False
+
+        if convert_time:
+            self.tz = tz
+            self._convert_time()
+        else:
+            self.tz = tz
+
+    def _convert_time(self, tz = "America/Chicago"):
+        if self.tz == tz:
+            return
+        else:
+            time_idx = pd.DatetimeIndex(self.ds.time.values)
+            self.ds = self.ds.assign_coords(
+                        time=(
+                            time_idx
+                            .tz_localize(self.tz)
+                            .tz_convert(tz)
+                            .tz_localize(None)
+                        )
+                    )
+            self.tz = tz
+
 
     #region Set up -----------------------------------------------    
     
@@ -159,7 +190,10 @@ class BaycastDataset(MeshMixin, VizMixin):
         nt = var.sizes['time'] if has_time else 1
         nvert = var.sizes['nvrt'] if has_nvrt else 1
         
-        triang = tri.Triangulation(self.x, self.y, self.trimesh)
+        if self.has_tri:
+            triang = tri.Triangulation(self.x, self.y, self.trimesh)
+        else:
+            triang = tri.Triangulation(self['lon'].values, self['lat'].values, self.nv.T)
         use_surf = has_nvrt and (z is None)
         if has_nvrt and not use_surf:
             raise NotImplementedError("Depth-specific integration not built yet")

@@ -129,6 +129,8 @@ class VizMixin:
             ax.set_facecolor('whitesmoke') # Add subtle background hue
         
         else:
+            if not self.has_tri:
+                self._assign_tri_attrs()
             ax.triplot(self.x, self.y, self.trimesh, color='k', lw=0.25, zorder=zorder)
 
         plt.axis('scaled')

@@ -227,7 +227,8 @@ class MeshMixin:
             return sub_ncdf
                 
         sub_ncdf = _sub_idx_recursive(ncdf, idx)
-        return type(self)(sub_ncdf)
+        new_obj = self._spawn(sub_ncdf)
+        return new_obj
     
     def _subset_bnd(self, pre_isel_ds, post_isel_ds, node_map):
         """
@@ -427,7 +428,16 @@ class MeshMixin:
         return
 
     # endregion mesh structures
-
+    def _spawn(self, ds):
+        obj = type(self)(ds, 
+                         assign_bathy = False, 
+                         assign_tri = False, 
+                         tz = self.tz)
+        if hasattr(self, 'has_tri') and self.has_tri:
+            obj.x = self.x
+            obj.y = self.y
+            obj.trimesh = self.trimesh
+        return obj
     
 
     @contextmanager

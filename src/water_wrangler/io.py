@@ -153,7 +153,6 @@ def load_baycast(
     dimension: str = "2D",
     type_2d: str = "depth",
     local_dir: str | Path | None = None,
-    convert_time: bool = True,  # True = convert UTC ➝ US Central (America/Chicago)
     **open_kwargs,
 ) -> BaycastDataset:
     """
@@ -167,9 +166,6 @@ def load_baycast(
     local_dir : str or Path or None
         - If not None: Local mode (read-only).
         - If None: Remote mode (temp-only).
-    convert_time : bool, default True
-        If True, convert time coord from UTC to US Central (America/Chicago)
-        and drop timezone info for xarray friendliness.
     **open_kwargs :
         Extra keyword arguments passed to `xarray.open_mfdataset`.
     **Outputs**
@@ -239,11 +235,7 @@ def load_baycast(
                 )
             
             ds = xr.open_mfdataset(temp_files, data_vars="minimal", compat = 'no_conflicts', **open_kwargs)
-
-            if convert_time and "time" in ds:
-                time_utc = pd.DatetimeIndex(ds["time"].values).tz_localize('UTC')
-                time_central = time_utc.tz_convert("America/Chicago").tz_localize(None)
-                ds = ds.assign_coords(time=("time", time_central))
+            
         except Exception as e:
             print(f"Error during BAYCAST loading: {e}")
     return BaycastDataset(ds)
