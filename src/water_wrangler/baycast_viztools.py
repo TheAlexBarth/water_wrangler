@@ -50,7 +50,9 @@ class VizMixin:
         **Outputs**
             Displays the requested model data and returns the matplotlib.pyplot.axes object.
         """
-
+        if not self.has_tri:
+            self._assign_tri_attrs()
+        
         # need to update here to reflect 
         # that it has already read in a data structure and not pulling from
         # a baycast configuration
@@ -99,6 +101,11 @@ class VizMixin:
                   mesh_kwargs=None
                   ):
         
+        if not self.has_bathy:
+            self._assign_bathybnd()
+        if not self.has_tri:
+            self._assign_tri_attrs()
+
         if mesh_kwargs is None:
             mesh_kwargs = {}
 
@@ -129,8 +136,6 @@ class VizMixin:
             ax.set_facecolor('whitesmoke') # Add subtle background hue
         
         else:
-            if not self.has_tri:
-                self._assign_tri_attrs()
             ax.triplot(self.x, self.y, self.trimesh, color='k', lw=0.25, zorder=zorder)
 
         plt.axis('scaled')

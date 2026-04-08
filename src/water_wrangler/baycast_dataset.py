@@ -11,7 +11,7 @@ class BaycastDataset(MeshMixin, VizMixin):
     A BAYCAST specific wrapper for xarray.Dataset with BAYCAST mesh tools and plotting
     """
 
-    def __init__(self, ds: xr.Dataset, assign_bathy = True, assign_tri = True, convert_time = False, tz = 'UTC'):
+    def __init__(self, ds: xr.Dataset, assign_bathy = False, assign_tri = False, convert_time = False, tz = 'UTC'):
 
         # Underlying actual Dataset
         self.ds = ds
