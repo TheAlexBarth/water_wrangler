@@ -364,7 +364,7 @@ class MeshMixin:
         self.x = x
         self.y = y
         if 'bathy' in self.data_vars:
-            self.bathy = self.bathy.values
+            self.bathy = self.ds.bathy.values
         else:
             self.bathy = None
         self.mesh = conn.T
@@ -373,7 +373,7 @@ class MeshMixin:
 
         # boundary parts
         if 'bnd' in self.data_vars:
-            self.bnd = self.bnd.values
+            self.bnd = self.ds.bnd.values
             if self.bnd[:, 0].min() == 1:
                 self.bnd[:, 0:2] -= 1
                 

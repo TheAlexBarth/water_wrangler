@@ -669,11 +669,11 @@ class VizMixin:
         save_frames=False,
         save_gif=True,
         display=True,
-        **plot_kwargs,
+        plot_kwargs=None,
     ):
         """
         Animate a scalar field by calling self.show_var(...) for each frame.
-        Mirrors the BAYCAST 'animate_outputs' spirit but streams frames (low memory). [1](https://twdb-my.sharepoint.com/personal/alex_barth_twdb_texas_gov/Documents/Microsoft%20Copilot%20Chat%20Files/baycast_meshtools.py)
+        Mirrors the BAYCAST 'animate_outputs' spirit but streams frames (low memory).
         """
         return self._animate_core(
             mode="var",
