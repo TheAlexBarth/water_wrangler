@@ -50,9 +50,8 @@ class VizMixin:
         **Outputs**
             Displays the requested model data and returns the matplotlib.pyplot.axes object.
         """
-        if not self.has_tri:
-            self._assign_tri_attrs()
-        
+        self._ensure_mesh()
+
         # need to update here to reflect 
         # that it has already read in a data structure and not pulling from
         # a baycast configuration
@@ -80,6 +79,7 @@ class VizMixin:
         if show_mesh:
             self.show_mesh(ax = ax, zorder = 3, **mesh_kwargs)
         if show_bnd:
+            self._ensure_bnd()
             self.show_boundary(ax = ax, zorder = 4, **bnd_kwargs)
 
         # Generate an appropriate title for the image
@@ -101,10 +101,8 @@ class VizMixin:
                   mesh_kwargs=None
                   ):
         
-        if not self.has_bathy:
-            self._assign_bathybnd()
-        if not self.has_tri:
-            self._assign_tri_attrs()
+        self._ensure_mesh()
+        self._ensure_bathy()
 
         if mesh_kwargs is None:
             mesh_kwargs = {}
@@ -374,6 +372,7 @@ class VizMixin:
                       pivot=pivot,alpha=alpha, **kwargs)
         
         if show_bnd:
+            self._ensure_bnd()
             self.show_boundary(ax = ax, zorder = 4, **bnd_kwargs)
         plt.axis('scaled')
         if custom_title is not None:

@@ -323,120 +323,131 @@ class MeshMixin:
     # endregion meshhelpers
 
     # region \- mesh structures --------------------------------------
-    def _assign_tri_attrs(self):
+    def _prep_mesh(self):
         """
-        Construct a mesh from connectivity array for plotting
-        
-        This is mostly just to reuse-functions from baycast without
-        gr3 file structure
+        Build mesh-derived topology objects from
+        connectivity stored in self.ds.
         """
-        x = self.lon.values
-        y = self.lat.values
-        nn = self.node.size
-        
-        _, mesh = self._get_mesh_var()
-        conn = mesh.values
-        nconn, nelem = mesh.dims
 
-        # get mesh connections
+        self.x = self.lon.values
+        self.y = self.lat.values
+
+        _, mesh = self._get_mesh_var()
+
+        conn = mesh.values
         conn, valid = self._reidx_conn(conn)
+
+        nconn_dim, nelem = mesh.dims
+
         nconn_elem = valid.sum(axis=0)
         i34 = np.clip(nconn_elem, 3, 4).astype(int)
 
-        tris1 = conn[:3, :].T # (nelem, 3)
-        # make extra triangles for rectangles
+        tris1 = conn[:3, :].T
+
         is_quad = (i34 == 4)
-        if nconn == 'four' and np.any(is_quad):
+
+        if nconn_dim == "four" and np.any(is_quad):
+
             conn_quad = conn[:, is_quad]
-            
+
             tris2 = np.column_stack([
-                conn_quad[0, :],
-                conn_quad[2, :],
-                conn_quad[3, :]
-            ])  # shape: (ne_quad, 3)
+                conn_quad[0],
+                conn_quad[2],
+                conn_quad[3]
+            ])
+
             trimesh = np.vstack([tris1, tris2])
+
         else:
             trimesh = tris1
-        
-        # assign vals
-        self.nn = nn
+
+        self.nn = len(self.x)
         self.ne = nelem
-        self.x = x
-        self.y = y
-        if 'bathy' in self.data_vars:
-            self.bathy = self.ds.bathy.values
-        else:
-            self.bathy = None
-        self.mesh = conn.T
+
+        self.conn = conn
         self.i34 = i34
         self.trimesh = trimesh
 
-        # boundary parts
-        if 'bnd' in self.data_vars:
-            self.bnd = self.ds.bnd.values
-            if self.bnd[:, 0].min() == 1:
-                self.bnd[:, 0:2] -= 1
-                
-
-
-            n1 = self.bnd[:, 0].astype(int)
-            n2 = self.bnd[:, 1].astype(int)
-
-            x1, y1 = self.x[n1], self.y[n1]
-            x2, y2 = self.x[n2], self.y[n2]
-
-            # Approximate distance in km (lon/lat-safe enough for Texas scale)
-            dx = (x2 - x1) * np.cos(np.deg2rad(0.5 * (y1 + y2)))
-            dy = (y2 - y1)
-            dist_km = 111.0 * np.sqrt(dx**2 + dy**2)
-
-            # Keep only reasonable segments
-            keep = dist_km <= 20
-
-            self.has_bnd = True
-            self.bnd_segments = np.column_stack((n1[keep], n2[keep]))
-        else:
-            self.has_bnd = False
-
-
-    def _assign_bathybnd(self):
+    def _prep_bnd(self):
         """
-        Assign bathymetry values to nodes from bathy variable if it exists
+        Ensure boundary information exists and
+        prepare plotting segments.
         """
-        if "bathy" not in self.data_vars:
-            with self._data_resource_path("bathy.nc") as bathy_file:
-                bthy_ds = xr.open_dataset(bathy_file)
-            
-            try:
-                self.ds = self.ds.assign(
-                    bathy = bthy_ds['bathy']
-                )
-            except Exception as e:
-                print(f"Unable to assign bathymetry: {e}")
-            
+
         if "bnd" not in self.data_vars:
             with self._data_resource_path("bnd.nc") as bnd_file:
                 bnd_ds = xr.open_dataset(bnd_file)
-            
-            try:
-                self.ds = self.ds.assign(
-                    bnd = bnd_ds['bnd']
-                )
-            except Exception as e:
-                print(f"Unable to assign boundary: {e}")
-            
-        return
+            self.ds = self.ds.assign(
+                bnd=bnd_ds["bnd"]
+            )
+
+        bnd = self.ds["bnd"].values.copy()
+
+        if bnd[:, 0].min() == 1:
+            bnd[:, 0:2] -= 1
+
+        n1 = bnd[:, 0].astype(int)
+        n2 = bnd[:, 1].astype(int)
+
+        x1 = self.x[n1]
+        y1 = self.y[n1]
+
+        x2 = self.x[n2]
+        y2 = self.y[n2]
+
+        dx = (x2 - x1) * np.cos(np.deg2rad(0.5 * (y1 + y2)))
+        dy = y2 - y1
+
+        dist_km = 111.0 * np.sqrt(dx**2 + dy**2)
+
+        keep = dist_km <= 20
+
+        self.bnd = bnd
+
+        self.bnd_segments = np.column_stack([
+            n1[keep],
+            n2[keep]
+        ])
+        self._bnd_prepped = True
+
+    def _prep_bathy(self):
+        """
+        Ensure bathymetry information exists and
+        prepare plotting segments.
+        """
+
+        if "bathy" not in self.data_vars:
+
+            with self._data_resource_path("bathy.nc") as bathy_file:
+                bthy_ds = xr.open_dataset(bathy_file)
+
+            self.ds = self.ds.assign(
+                bathy=bthy_ds["bathy"]
+            )
+
+        self.bathy = self.ds["bathy"].values
+    
+    # endregion mesh structures -------------------------------
+
+    # region \- ensure mesh structures --------------------------------------
+    def _ensure_mesh(self):
+        if not getattr(self, '_mesh_prepped', False):
+            self._prep_mesh()
+            self._mesh_prepped = True
+
+    def _ensure_bnd(self):
+        self._ensure_mesh()
+        if not hasattr(self, 'bnd_segments'):
+            self._prep_bnd()
+
+    def _ensure_bathy(self):
+        if not hasattr(self, 'bathy'):
+            self._prep_bathy()
+
 
     # endregion mesh structures
     def _spawn(self, ds):
-        obj = type(self)(ds, 
-                         assign_bathy = False, 
-                         assign_tri = False, 
-                         tz = self.tz)
-        if hasattr(self, 'has_tri') and self.has_tri:
-            obj.x = self.x
-            obj.y = self.y
-            obj.trimesh = self.trimesh
+        obj = type(self)(ds, tz = self.tz)
         return obj
     
 

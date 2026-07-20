@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: water_wrangler
-Version: 0.1.0
+Version: 0.2.0
 Summary: BAYCAST xarray wrapper and visualization utilities for SCHISM outputs
 Author: Dr. Alex Barth
 License: MIT3.0

@@ -11,10 +11,20 @@ class BaycastDataset(MeshMixin, VizMixin):
     A BAYCAST specific wrapper for xarray.Dataset with BAYCAST mesh tools and plotting
     """
 
-    def __init__(self, ds: xr.Dataset, assign_bathy = False, assign_tri = False, convert_time = False, tz = 'UTC'):
+    def __init__(
+            self, ds: xr.Dataset, 
+            convert_time = False, tz = 'UTC'
+        ):
 
         # Underlying actual Dataset
         self.ds = ds
+        self._mesh_prepped = False
+        self.conn = None
+        self.trimesh = None
+
+        self.dim = (
+            "3D" if 'sigma' in self.ds.coords else "2D"
+        )
 
         # BAYCAST display settings
         self.display_settings = {
@@ -48,21 +58,6 @@ class BaycastDataset(MeshMixin, VizMixin):
                 'show_bnd':True, 'bnd_alpha':1, 'label':'Northward (Y) Velocity', 'units':'m/s'}
         }
 
-        if 'sigma' in self.coords:
-            self.dim = '3D'
-        else:
-            self.dim = '2D'
-        
-        if assign_bathy:
-            self.has_bathy = True
-            self._assign_bathybnd()
-        else:
-            self.has_bathy = False
-        if assign_tri:
-            self._assign_tri_attrs()
-            self.has_tri = True
-        else:
-            self.has_tri = False
 
         if convert_time:
             self.tz = tz
@@ -190,10 +185,13 @@ class BaycastDataset(MeshMixin, VizMixin):
         nt = var.sizes['time'] if has_time else 1
         nvert = var.sizes['nvrt'] if has_nvrt else 1
         
-        if self.has_tri:
-            triang = tri.Triangulation(self.x, self.y, self.trimesh)
-        else:
-            triang = tri.Triangulation(self['lon'].values, self['lat'].values, self.nv.T)
+        self._ensure_mesh()
+        
+        triang = tri.Triangulation(
+            self.x,
+            self.y,
+            self.trimesh
+        )
         use_surf = has_nvrt and (z is None)
         if has_nvrt and not use_surf:
             raise NotImplementedError("Depth-specific integration not built yet")
