@@ -266,6 +266,133 @@ class MeshMixin:
         return post_isel_ds.assign(bnd=(dims, bnd_new))
     
     #endregion subset driver
+
+    #region \- downsampling ----------------------------------------------
+    """
+
+    Grid-cell downsampling for cases where a computation (e.g. multiplying
+    mesh values against a large posterior sample matrix) is too expensive
+    or memory-heavy to run at full mesh resolution.
+
+    """
+    def build_downsample_map(self,
+                             cell_size_m: float = 1000,
+                             bbox: list = None,
+                             min_nodes_per_cell: int = 1):
+        """
+        Bin mesh nodes into a coarse lon/lat grid and pick one real
+        representative node (nearest to the grid cell's center) per
+        occupied cell. Caches the result on self for later reuse.
+
+        **Inputs**
+            cell_size_m (float) : approximate physical size (meters) of each
+                grid cell used for binning
+            bbox (list, optional) : [xmin, ymin, xmax, ymax] to restrict the
+                grid extent (defaults to the full mesh extent)
+            min_nodes_per_cell (int) : cells with fewer member nodes than
+                this are skipped (default 1, i.e. no filtering)
+        **Outputs**
+            rep_idx (np.ndarray) : full-resolution node indices chosen as
+                representatives. Also cached as self._ds_rep_idx,
+                self._ds_node_map (full-length node -> rep_idx position
+                lookup), and self._ds_cell_size_m.
+        """
+        self._ensure_mesh()
+        xs = self.x
+        ys = self.y
+
+        if bbox is None:
+            xmin, xmax = xs.min(), xs.max()
+            ymin, ymax = ys.min(), ys.max()
+        else:
+            xmin, ymin, xmax, ymax = bbox
+
+        mean_lat = 0.5 * (ymin + ymax)
+        m_per_deg_lon = math.cos(math.radians(mean_lat)) * math.pi / 180 * 6371008.8
+        m_per_deg_lat = math.pi / 180 * 6371008.8
+
+        dlon = cell_size_m / m_per_deg_lon
+        dlat = cell_size_m / m_per_deg_lat
+
+        col = np.floor((xs - xmin) / dlon).astype(np.int64)
+        row = np.floor((ys - ymin) / dlat).astype(np.int64)
+        ncols = int(np.floor((xmax - xmin) / dlon)) + 2
+
+        cell_key = row * ncols + col
+
+        # distance of every node to its own cell's center, computed once
+        # for all nodes rather than per-cell
+        cx = xmin + (col + 0.5) * dlon
+        cy = ymin + (row + 0.5) * dlat
+        dist2 = (xs - cx) ** 2 + (ys - cy) ** 2
+
+        # sort by (cell, distance) so the nearest node to each cell center
+        # is the first entry of its group -- avoids a per-cell Python loop
+        order = np.lexsort((dist2, cell_key))
+        sorted_keys = cell_key[order]
+        group_start = np.concatenate(([True], sorted_keys[1:] != sorted_keys[:-1]))
+        starts = np.flatnonzero(group_start)
+        n_cells = starts.size
+
+        if n_cells < 2:
+            raise ValueError(
+                f"cell_size_m={cell_size_m} is too large for the mesh extent "
+                f"(only {n_cells} occupied grid cell(s) resulted); use a smaller cell_size_m"
+            )
+
+        sizes = np.diff(np.append(starts, sorted_keys.size))
+        rep_idx = np.sort(order[starts][sizes >= min_nodes_per_cell])
+        if rep_idx.size < 2:
+            raise ValueError(
+                f"min_nodes_per_cell={min_nodes_per_cell} filtered out nearly all cells; "
+                "lower min_nodes_per_cell or cell_size_m"
+            )
+
+        coords_all = np.column_stack([xs, ys])
+        coords_rep = coords_all[rep_idx]
+        node_map = self._match_nearest(coords_rep, coords_all, unique=False)
+
+        self._ds_rep_idx = rep_idx
+        self._ds_node_map = node_map
+        self._ds_cell_size_m = cell_size_m
+        self._ds_prepped = True
+
+        return rep_idx
+
+    def _ensure_downsample(self, cell_size_m: float = 1000, **kwargs):
+        if (not getattr(self, '_ds_prepped', False)
+                or getattr(self, '_ds_cell_size_m', None) != cell_size_m):
+            self.build_downsample_map(cell_size_m=cell_size_m, **kwargs)
+
+    def broadcast_to_full(self, coarse_values: np.ndarray) -> np.ndarray:
+        """
+        Map values computed on the downsampled representative-node set
+        back onto the full-resolution node dimension, for plotting on the
+        original (unmodified) mesh geometry.
+
+        **Inputs**
+            coarse_values (np.ndarray, shape (n_rep,) or (n_rep, k)) : values
+                computed at the representative nodes (e.g. a posterior mean,
+                std, or stack of quantiles)
+        **Outputs**
+            full_values (np.ndarray, shape (n_nodes,) or (n_nodes, k)) : same
+                values broadcast to every original node
+        """
+        if not getattr(self, '_ds_prepped', False):
+            raise RuntimeError(
+                "Downsample map not built yet; call build_downsample_map() "
+                "or _ensure_downsample() first"
+            )
+        coarse_values = np.asarray(coarse_values)
+        if coarse_values.shape[0] != self._ds_rep_idx.shape[0]:
+            raise ValueError(
+                f"coarse_values has {coarse_values.shape[0]} rows, expected "
+                f"{self._ds_rep_idx.shape[0]} (one per representative node)"
+            )
+        return coarse_values[self._ds_node_map]
+
+    #endregion downsampling ------------------------------------------
+
     #region \- Mesh Helpers ------------------------------------------
     def _get_mesh_var(self, ds=None):
         if ds is None:
@@ -409,6 +536,7 @@ class MeshMixin:
             n2[keep]
         ])
         self._bnd_prepped = True
+        self.has_bnd = self.bnd_segments.shape[0] > 0
 
     def _prep_bathy(self):
         """
