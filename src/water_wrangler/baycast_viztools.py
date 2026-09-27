@@ -80,9 +80,9 @@ class VizMixin:
             **kwargs
         )
 
-    def show_posterior_field(self,
+    def show_field(self,
                              full_values,
-                             label = "Posterior Summary",
+                             label,
                              units = "",
                              cmap = "viridis",
                              vmin = None,
@@ -108,7 +108,7 @@ class VizMixin:
                 (i.e. length == number of mesh nodes)
             label, units (str) : used to build the plot title
             cmap, vmin, vmax, facecolor : styling, analogous to a
-                display_settings entry, supplied directly since posterior
+                display_settings entry, supplied directly since external
                 fields have no fixed natural range
         **Outputs**
             matplotlib.axes.Axes
@@ -162,8 +162,8 @@ class VizMixin:
         """
         Core tripcolor + mesh + boundary + colorbar + title renderer for any
         (n_nodes,)-shaped array on self.x, self.y, self.trimesh. Shared by
-        show_var (registered BAYCAST variables) and show_posterior_field
-        (arbitrary externally-computed fields), so both paths stay in sync.
+        show_var (registered BAYCAST variables) and show_field
+        (arbitrary externally-computed fields)
         """
         self._ensure_mesh()
 
