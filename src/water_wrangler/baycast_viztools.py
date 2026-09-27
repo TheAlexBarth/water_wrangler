@@ -52,11 +52,121 @@ class VizMixin:
         """
         self._ensure_mesh()
 
-        # need to update here to reflect 
+        # need to update here to reflect
         # that it has already read in a data structure and not pulling from
         # a baycast configuration
         data = self._select_datavar(variable, tind, time, vlayer)
-        
+
+        # Generate an appropriate title for the image
+        if custom_title is None:
+            titlestr = self._create_title(variable, title_prefix, tind)
+        else:
+            titlestr = custom_title
+
+        settings = self.display_settings[variable]
+        return self._render_field(
+            data,
+            vmin=settings['vmin'],
+            vmax=settings['vmax'],
+            cmap=settings['cmap'],
+            facecolor=settings['facecolor'],
+            show_mesh=show_mesh,
+            show_bnd=show_bnd,
+            title=titlestr,
+            figsize=figsize,
+            dpi=dpi,
+            mesh_kwargs=mesh_kwargs,
+            bnd_kwargs=bnd_kwargs,
+            **kwargs
+        )
+
+    def show_field(self,
+                             full_values,
+                             label,
+                             units = "",
+                             cmap = "viridis",
+                             vmin = None,
+                             vmax = None,
+                             facecolor = "whitesmoke",
+                             show_mesh = True,
+                             show_bnd = True,
+                             custom_title = None,
+                             figsize = (10,10),
+                             dpi = 300,
+                             mesh_kwargs = {},
+                             bnd_kwargs = {},
+                             **kwargs):
+        """
+        Plot an arbitrary full-resolution (n_nodes,)-shaped field using the
+        same rendering pipeline as show_var, without requiring the field to
+        be registered in display_settings. Intended for externally-computed
+        per-node arrays (e.g. a downstream analysis result) mapped back to
+        full mesh resolution via broadcast_to_full (see MeshMixin).
+
+        **Inputs**
+            full_values (np.ndarray) : field already at full mesh resolution
+                (i.e. length == number of mesh nodes)
+            label, units (str) : used to build the plot title
+            cmap, vmin, vmax, facecolor : styling, analogous to a
+                display_settings entry, supplied directly since external
+                fields have no fixed natural range
+        **Outputs**
+            matplotlib.axes.Axes
+        """
+        self._ensure_mesh()
+        full_values = np.asarray(full_values)
+        if len(full_values) != len(self.x):
+            raise ValueError(
+                f"full_values has length {len(full_values)}, expected "
+                f"{len(self.x)} (full mesh resolution) -- did you forget "
+                "to call broadcast_to_full()?"
+            )
+
+        if custom_title is None:
+            titlestr = f"{label}" + (f" [{units}]" if units else "")
+        else:
+            titlestr = custom_title
+
+        return self._render_field(
+            full_values,
+            vmin=vmin,
+            vmax=vmax,
+            cmap=cmap,
+            facecolor=facecolor,
+            show_mesh=show_mesh,
+            show_bnd=show_bnd,
+            title=titlestr,
+            figsize=figsize,
+            dpi=dpi,
+            mesh_kwargs=mesh_kwargs,
+            bnd_kwargs=bnd_kwargs,
+            **kwargs
+        )
+    #endregion fullplot-------------------------------------------------
+
+    #region \- render core -----------------------------------------------
+    def _render_field(self,
+                      data,
+                      vmin = None,
+                      vmax = None,
+                      cmap = 'viridis',
+                      facecolor = 'whitesmoke',
+                      show_mesh = True,
+                      show_bnd = True,
+                      title = None,
+                      figsize = (10,10),
+                      dpi = 300,
+                      mesh_kwargs = {},
+                      bnd_kwargs = {},
+                      **kwargs):
+        """
+        Core tripcolor + mesh + boundary + colorbar + title renderer for any
+        (n_nodes,)-shaped array on self.x, self.y, self.trimesh. Shared by
+        show_var (registered BAYCAST variables) and show_field
+        (arbitrary externally-computed fields)
+        """
+        self._ensure_mesh()
+
         # Generate plot
         if len(plt.get_fignums()) < 1:
             # Create new figure axes if none are open
@@ -67,14 +177,12 @@ class VizMixin:
         # Display the data
         bth = ax.tripcolor(
             self.x, self.y, self.trimesh, data, zorder=2, shading='gouraud',
-            vmin=self.display_settings[variable]['vmin'], 
-            vmax=self.display_settings[variable]['vmax'], 
-            cmap=self.display_settings[variable]['cmap'])
+            vmin=vmin, vmax=vmax, cmap=cmap)
 
         # Apply figure settings
         plt.axis('scaled')
-        
-        ax.set_facecolor(self.display_settings[variable]['facecolor'])
+
+        ax.set_facecolor(facecolor)
         self._show_colorbar(ax, bth, **kwargs)
         if show_mesh:
             self.show_mesh(ax = ax, zorder = 3, **mesh_kwargs)
@@ -82,14 +190,10 @@ class VizMixin:
             self._ensure_bnd()
             self.show_boundary(ax = ax, zorder = 4, **bnd_kwargs)
 
-        # Generate an appropriate title for the image
-        if custom_title is None:
-            titlestr = self._create_title(variable, title_prefix, tind)
-        else:
-            titlestr = custom_title
-        title = ax.set_title(titlestr)
+        if title is not None:
+            ax.set_title(title)
         return ax
-    #endregion fullplot-------------------------------------------------
+    #endregion render core ----------------------------------------------
 
     #region \- shade -------------------------------------------------
     def show_mesh(self,

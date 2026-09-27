@@ -3,3 +3,6 @@ local_tests/
 !src/
 *.ipynb
 .vscode/
+example_data/
+.DS*
+examples/
