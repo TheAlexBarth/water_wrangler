@@ -188,6 +188,12 @@ class MeshMixin:
         **Returns**
             Updates object to have less nodes
         """
+        # Attach bathy/bnd (packaged against the full mesh) before subsetting so
+        # they are carried through node isel + reindexing; otherwise a subset would
+        # later reload the full-mesh files and mismatch its node dimension.
+        self._ensure_bathy()
+        self._ensure_bnd()
+
         ncdf = self.ds
 
         def _sub_idx_recursive(sub_ncdf, idx):

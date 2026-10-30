@@ -180,12 +180,12 @@ class VizMixin:
             vmin=vmin, vmax=vmax, cmap=cmap)
 
         # Apply figure settings
-        plt.axis('scaled')
+        ax.axis('scaled')
 
         ax.set_facecolor(facecolor)
         self._show_colorbar(ax, bth, **kwargs)
         if show_mesh:
-            self.show_mesh(ax = ax, zorder = 3, **mesh_kwargs)
+            self.show_mesh(ax = ax, zorder = 3, mesh_kwargs=mesh_kwargs)
         if show_bnd:
             self._ensure_bnd()
             self.show_boundary(ax = ax, zorder = 4, **bnd_kwargs)
@@ -208,10 +208,10 @@ class VizMixin:
         self._ensure_mesh()
         self._ensure_bathy()
 
-        if mesh_kwargs is None:
-            mesh_kwargs = {}
+        mesh_kwargs = dict(mesh_kwargs) if mesh_kwargs else {}
 
         shade = mesh_kwargs.pop('shade', shade)
+        grid = mesh_kwargs.pop('grid', True)
         if title is None:
             mesh_kwargs.pop('title', None)
 
@@ -222,58 +222,82 @@ class VizMixin:
                 fig, ax = plt.subplots(1, 1, figsize=figsize, dpi=300)
             else:
                 ax = plt.gca()  # Otherwise grab existing
-        
+
         if shade:
             azimuth = mesh_kwargs.pop('azimuth', 45)
             angle_altitude = mesh_kwargs.pop('angle_altitude', 70)
-            alpha = mesh_kwargs.pop('alpha', 0.5)
-    
-            shade_area = self._hillshade(azimuth = azimuth, angle_altitude=angle_altitude)
-            if shade_area is None:
-                print('No bathy')
-                return
-                
-            ax.tripcolor(self.x, self.y, self.trimesh, shade_area, zorder=zorder,
-                        cmap='Greys', alpha=alpha)
-            ax.set_facecolor('whitesmoke') # Add subtle background hue
-        
-        else:
-            ax.triplot(self.x, self.y, self.trimesh, color='k', lw=0.25, zorder=zorder)
+            alpha = mesh_kwargs.pop('alpha', 0.6)
+            exaggeration = mesh_kwargs.pop('exaggeration', 3e-3)
 
-        plt.axis('scaled')
+            illum = self._hillshade(azimuth=azimuth, angle_altitude=angle_altitude,
+                                    exaggeration=exaggeration)
+            if illum is None:
+                print('No bathy')
+            else:
+                # Emboss the surface: shade each element by how far its illumination
+                # sits from flat terrain -- lit faces lighten, shadowed faces darken,
+                # flat stays transparent so any underlying field keeps its colours.
+                # tripcolor drops a colormap's alpha, so carry it in set_alpha.
+                flat = np.cos(np.deg2rad(angle_altitude))
+                dev = (illum - flat)[self.trimesh].mean(axis=1)
+                relief = ax.tripcolor(self.x, self.y, self.trimesh, dev, zorder=zorder,
+                                      cmap='gray', vmin=-flat, vmax=flat)
+                relief.set_alpha(np.clip(np.abs(dev) / flat, 0.0, 1.0) * alpha)
+            ax.set_facecolor('whitesmoke') # Add subtle background hue
+
+        if grid:
+            ax.triplot(self.x, self.y, self.trimesh, color='k', lw=0.2,
+                       alpha=0.4, zorder=zorder + 1)
+
+        ax.axis('scaled')
         if title is not None:
             ax.set_title(title)
         return ax
 
 
-    def _hillshade(self, azimuth=315, angle_altitude=45):
+    def _hillshade(self, azimuth=315, angle_altitude=45, exaggeration=3e-3):
         """
-        Function for computing hillshade on an unstructured mesh.
-        For nice-looking plots, layer it on top other variables with an alpha=0.5.
-        
+        Function for computing hillshade on an unstructured mesh. Returns a
+        per-node illumination (flat terrain -> cos(altitude), lit slopes higher,
+        shadowed slopes lower) suitable for a gouraud overlay. The static result
+        is cached per (azimuth, angle_altitude, exaggeration) so animations only
+        pay for it once.
+
         Function adapted (and modified to work on an unstructured mesh) from here:
         https://www.neonscience.org/resources/learning-hub/tutorials/create-hillshade-py
-        
+
         **Inputs**
             azimuth (float, optional) : Azimuth of the light source, in degrees
             angle_altitude (float, optional) : Angle altitude of the light source,
                 in degrees
+            exaggeration (float, optional) : vertical-to-horizontal scale factor
         **Outputs**
-            shaded (np.ndarray) : Hillshade array of shape (1, number of nodes)
+            illum (np.ndarray) : per-node illumination, shape (number of nodes,)
         """
         import warnings # Suppress MaskedArray warning
         warnings.filterwarnings("ignore", category=UserWarning)
-        azimuth = 360-azimuth+90
 
-        # Corrects for vertical-to-horizontal scale difference and adds ledge to land boundaries
         if self.bathy is None:
             return None
-    
-        modified_bathy = self.bathy*2e-3
-      
+
+        cache = getattr(self, '_hillshade_cache', None)
+        if cache is None:
+            cache = self._hillshade_cache = {}
+        key = (azimuth, angle_altitude, exaggeration)
+        if key in cache:
+            return cache[key]
+
+        azimuth = 360-azimuth+90
+
+        # Log-compress depth before shading so estuary channels and abyssal
+        # offshore (here spanning ~1m to ~3600m) both read as relief rather than
+        # the deep dominating; exaggeration then sets the overall relief strength.
+        modified_bathy = exaggeration * np.sign(self.bathy) * np.log1p(np.abs(self.bathy))
+
         # Create interpolation function to get the gradient of the bathymetry
-        triang = tri.Triangulation(self.x, self.y, self.trimesh)
-        tri_interp = tri.LinearTriInterpolator(triang, modified_bathy)
+        if getattr(self, '_tri_cache', None) is None:
+            self._tri_cache = tri.Triangulation(self.x, self.y, self.trimesh)
+        tri_interp = tri.LinearTriInterpolator(self._tri_cache, modified_bathy)
 
         # Find centroid coordinates of the elements
         ele_x = (self.x[self.trimesh[:,0]] + self.x[self.trimesh[:,1]] + self.x[self.trimesh[:,2]])/3
@@ -295,39 +319,23 @@ class VizMixin:
         azimuthrad = azimuth*np.pi/180
         altituderad = angle_altitude*np.pi/180
 
-        # Compute hillshade
+        # Compute hillshade illumination (flat terrain -> cos(altitude))
+        flat = np.cos(altituderad)
         shaded = ((np.cos(altituderad)*np.cos(slope)) + \
             (np.sin(altituderad)*np.sin(slope)*np.cos(azimuthrad - aspect)))
-        
-        ne = self.trimesh.shape[0]
+        shaded = np.ma.filled(shaded, flat)
+
+        # element -> node mean (vectorized scatter-add over the connectivity)
         nn = self.x.size
-
-        # element -> node
-        node_vals = np.zeros(nn)
-        node_counts = np.zeros(nn)
-
-        for e in range(ne):
-            i, j, k = self.trimesh[e]
-            val = shaded[e]
-            node_vals[i] += val
-            node_vals[j] += val
-            node_vals[k] += val
-            node_counts[i] += 1
-            node_counts[j] += 1
-            node_counts[k] += 1
-
+        flat_idx = self.trimesh.ravel()
+        node_vals = np.bincount(flat_idx, weights=np.repeat(shaded, 3), minlength=nn)
+        node_counts = np.bincount(flat_idx, minlength=nn)
         valid = node_counts > 0
         node_vals[valid] /= node_counts[valid]
+        node_vals[~valid] = flat
 
-        # node -> element
-        smoothed = np.zeros_like(shaded)
-        for e in range(ne):
-            i, j, k = self.trimesh[e]
-            smoothed[e] = (node_vals[i] + node_vals[j] + node_vals[k]) / 3.0
-
-        shaded = smoothed
-        shaded = np.clip(shaded, 0.0, 0.85)
-        return shaded
+        cache[key] = node_vals
+        return node_vals
 
 
 
@@ -366,7 +374,7 @@ class VizMixin:
                 **kwargs
             )
             ax.add_collection(lc_land)
-            plt.axis('scaled')
+            ax.axis('scaled')
             return ax
         else:
             return
@@ -478,7 +486,7 @@ class VizMixin:
         if show_bnd:
             self._ensure_bnd()
             self.show_boundary(ax = ax, zorder = 4, **bnd_kwargs)
-        plt.axis('scaled')
+        ax.axis('scaled')
         if custom_title is not None:
             ax.set_title(custom_title)
         return ax
@@ -496,18 +504,16 @@ class VizMixin:
         Helper function to add an inset colorbar
         """
         from mpl_toolkits.axes_grid1.inset_locator import inset_axes
-        
-        # Generate a small colorbar inset
+        from matplotlib.ticker import MaxNLocator
+
+        # Generate a slim colorbar inset, tall enough to space the ticks out
+        axins1 = inset_axes(ax, width="3%", height="40%", loc=loc, borderpad=1)
+        cbar = plt.colorbar(mappable, cax=axins1)
+        cbar.ax.yaxis.set_major_locator(MaxNLocator(5))
+        cbar.ax.tick_params(labelsize=8)
         if 'right' in loc:
-            axins1 = inset_axes(ax, width="3%", height="20%",
-                                loc=loc, borderpad = 1)
-            cbar = plt.colorbar(mappable, cax=axins1)
             cbar.ax.yaxis.set_ticks_position('left')
             cbar.ax.yaxis.set_label_position('left')
-        else:
-            axins1 = inset_axes(ax, width="3%", height="20%",
-                                loc=loc, borderpad = 1)
-            cbar = plt.colorbar(mappable, cax=axins1)
         return
     
     def _create_title(self,
@@ -686,6 +692,7 @@ class VizMixin:
 
         # Determine frame directory (only needed if saving frames OR if using disk as intermediate)
         # For lowest-memory, we do NOT keep frames in RAM; we write a PNG, append to GIF, delete PNG unless saving.
+        tmp_png_dir = None
         if save_frames:
             if folder is None:
                 raise ValueError("folder must be provided when save_frames=True")
@@ -715,11 +722,16 @@ class VizMixin:
 
                 # --- render frame ---
                 if mode == "var":
-                    ax = self.show_var(variable, tind=ti, dpi=dpi, custom_title=custom_title **plot_kwargs)
+                    pk = dict(plot_kwargs)
+                    pk.setdefault("dpi", dpi)
+                    pk.setdefault("custom_title", custom_title)
+                    ax = self.show_var(variable, tind=ti, **pk)
 
                 elif mode == "quiver":
                     # Build a consistent canvas
-                    fig, ax = plt.subplots(1, 1, figsize=plot_kwargs.get("figsize", (10, 10)), dpi=dpi, **plot_kwargs)
+                    pk = dict(plot_kwargs)
+                    figsize = pk.pop("figsize", (10, 10))
+                    fig, ax = plt.subplots(1, 1, figsize=figsize, dpi=dpi, **pk)
 
                     # Now the actual thing requested: pass through show_quiver
                     ax = self.show_quiver(tind=ti if ti is not None else -1, ax=ax, custom_title=custom_title, **quiver_kwargs)
@@ -750,6 +762,8 @@ class VizMixin:
 
             if tmpdir is not None:
                 tmpdir.cleanup()
+            if tmp_png_dir is not None:
+                tmp_png_dir.cleanup()
 
         # If saved, optionally display, then return path
         if save_gif and gif_path is not None:
