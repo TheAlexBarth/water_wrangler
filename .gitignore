@@ -6,3 +6,4 @@ local_tests/
 example_data/
 .DS*
 examples/
+__pycache__/
