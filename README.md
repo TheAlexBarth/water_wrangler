@@ -2,23 +2,6 @@
 
 Water Wrangler is a Python toolkit for working with TWDB Coastal Science outputs, primarily accessing and handling BAYCAST datasets. The design is to act both as an API handler for TWDB Coastal data AND provide user-friendly features for handling BAYCAST output without requiring the complete SCHISM cofiguration or baycast package.
 
-Water Wrangler supports workflows for BAYCAST-focused work including:
-- Downloading BAYCAST NetCDF files from TWDB Midgewater
-- Loading local or remote BAYCAST datasets
-- Wrapping BAYCAST output in `BaycastDataset`
-- Preparing SCHISM-style mesh topology
-- Supporting mixed triangle / quadrilateral meshes
-- Handling disconnected mesh fragments
-- Plotting mesh-based datasets
-- Interpolating over unstructured meshes
-- Managing boundary topology
-- Rasterizing coastal geometry layers
-And querying data from Water Data for Texas including:
-- coastal geometries
-- (coming soon) continuous water quality 
-- (coming soon) freshwater inflows datasets'
-
-
 ## BAYCAST
 
 Water Wrangler accesses BAYCAST output, which is expected to be stored as single-day output files
@@ -35,13 +18,6 @@ Expected filename patterns:
 3D: {product}_{dimension}_{YYYYMMDD}.nc
 ```
 
-Examples:
-
-```text
-chem_2D_depth_20260101.nc
-chem_3D_20260101.nc
-```
-
 Supported BAYCAST options:
 
 ```python
@@ -55,12 +31,11 @@ type_2d = "depth" or "surf"
 
 ### Load BAYCAST Datasets
 
-Use `load_baycast()` to open BAYCAST datasets and return a `BaycastDataset`.
-
 ```python
-from water_wrangler.io import load_baycast
+from water_wrangler import load_hydrodynamic
 
-baycast = load_baycast(
+baycast = load_hydrodynamic(
+    model="baycast",
     date="2026-01-01",
     to_date="2026-01-07",
     product="chem",
@@ -70,85 +45,37 @@ baycast = load_baycast(
 ```
 
 If files are available locally, use `local_dir` which will check that directory for BAYCAST output files
-- Missing files raise `FileNotFoundError`
-- Files are opened with `xarray.open_mfdataset`
-
-
-If `local_dir=None` (default) files are downloaded to temporary `.nc` files. Note if you want to download and *store* BAYCAST output use `query_baycast()`
-
-Additional keyword arguments are passed to `xarray.open_mfdataset`:
-
-```python
-baycast = load_baycast(
-    date="2026-01-01",
-    to_date="2026-01-07",
-    chunks={"time": 1},
-)
-```
+If `local_dir=None` (default) files are downloaded to temporary `.nc` files. Note if you want to download and *store* BAYCAST output use `query_hydrodynamic(model="baycast")`
+Alternatively use `query_hydrodynamic()` to download and store locally.
 
 ---
 
 ### BAYCAST DATASETS
 
-Once loaded, in python water_wranger constructs an object from the BaycastDataset class. This object has several convenient features.
+Once loaded, in python water_wranger constructs an object from the HydrodynamicDataset class. This object has several convenient features.
 
 #### Mesh Preparation
 
-Mesh topology is prepared lazily with `BaycastDataset._ensure_mesh()`. This allows for triangulation features reading the nv connectivity matrix and formatting so SCHISM 1-based indexing is converted to Python-compatible 0-based indexing.
+Mesh topology is prepared lazily with `HydrodynamicDataset._ensure_mesh()`. This will load nv to have mesh features for plotting and formatting - like subsets or interpolation.
 
 ---
-
 #### Subsetting Meshes
-`BaycastDataset.subset_mesh()`
-
+`HydrodynamicDataset.subset_mesh()`
 ---
-
-#### Triangular inter
-`BaycastDataset.interpolate_to_points()`
+#### Triangular interpolation
+`HydrodynamicDataset.interpolate_to_points()`
 ---
 
 #### Plotting
-
+[need to add details here]
 ---
 
-## Data Access
-
-
-### Download BAYCAST Files
-
-Use `query_baycast()` to download BAYCAST NetCDF files and store them locally.
-
-```python
-from water_wrangler.io import query_baycast
-
-query_baycast(
-    date="2026-01-01",
-    to_date="2026-01-07",
-    save_dir="./baycast",
-    product="chem",
-    dimension="2D",
-    type_2d="depth",
-)
-```
-
-If `to_date` is omitted, only `date` is downloaded.
-
-Date inputs may be:
-
-```python
-str
-datetime.date
-datetime.datetime
-pandas.Timestamp
-```
----
-
-### Water Data for Texas Geometries
+### Water Data for Texas
 
 Use `query_shapefile()` to retrieve coastal geometry layers from Water Data for Texas.
 
 ```python
-from water_wrangler.io import query_shapefile
+from water_wrangler import query_shapefile
 
 bays = query_shapefile("bay")
 basins = query_shapefile("basin")
@@ -156,19 +83,19 @@ estuaries = query_shapefile("estuary")
 watersheds = query_shapefile("watershed")
 ```
 
-Allowed geometry types:
+Use `query_wqtimeseries()` to pull observed water-quality (sonde) timeseries from Water Data for
+Texas. It returns a `SondeTimeseries` (an `EnvTimeseries`, so it has `.plot()` and
+`.resample_time()`). Use `SondeTimeseries.list_stations()` to discover station codes.
 
 ```python
-"bay"
-"basin"
-"estuary"
-"watershed"
-```
+from water_wrangler import query_wqtimeseries, SondeTimeseries
 
-Returned data are `geopandas.GeoDataFrame` objects using:
-
-```text
-EPSG:4326
+stations = SondeTimeseries.list_stations()                 # station metadata (GeoDataFrame)
+salinity = query_wqtimeseries(
+    "6980", "seawater_salinity",
+    start_date="2018-08-01", end_date="2018-10-01",
+)                                                           # SondeTimeseries
+salinity.plot()
 ```
 
 ---

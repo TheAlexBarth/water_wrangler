@@ -52,9 +52,6 @@ class VizMixin:
         """
         self._ensure_mesh()
 
-        # need to update here to reflect
-        # that it has already read in a data structure and not pulling from
-        # a baycast configuration
         data = self._select_datavar(variable, tind, time, vlayer)
 
         # Generate an appropriate title for the image
