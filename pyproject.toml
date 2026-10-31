@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "water_wrangler"
-version = "0.3.0"
-description = "Query, format, and visualize TWDB coastal water data (hydrodynamic models, hydrology, observed)"
+version = "1.0.0"
+description = "Query, format, and visualize Texas coastal water data (hydrodynamic models, hydrology, observed)"
 readme = "README.md"
 requires-python = ">=3.9"
 
@@ -32,14 +32,13 @@ dependencies = [
 
 [project.optional-dependencies]
 hydrology = [
-  "pyyaml",
   "fsspec",
   "s3fs",
   "gcsfs",
   "zarr",
+  "h5netcdf",
   "pynhd",
   "dataretrieval",
-  "pyarrow",
 ]
 dev = [
   "ipykernel",

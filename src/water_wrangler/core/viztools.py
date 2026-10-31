@@ -13,13 +13,6 @@ class VizMixin:
     """
 
     Plotting tools:
-        Userside:
-        - show variable
-        - show mesh
-        - show quiver
-        Hidden:
-
-
 
     """
     #region \- Full Plot --------------------
@@ -35,8 +28,7 @@ class VizMixin:
                      bnd_kwargs = {},
                      **kwargs):
         """
-        Function that standardizes the process of displaying model outputs using the
-        pre-defined display settings for each variable type.
+        Ploting single variable
 
         **Inputs**
             variable (str) : The data variable to be displayed. String should match one

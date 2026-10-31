@@ -70,17 +70,22 @@ Mesh topology is prepared lazily with `HydrodynamicDataset._ensure_mesh()`. This
 [need to add details here]
 ---
 
+## Hydrology
+### Load Hydrology
+Hydrology can be loaded using `query_hydrology()` with either 'nwm' or 'twdb' for source. If `source='twdb'` the boundary can be either a watershed character or gpd/geometry. `source='nwm'` requires a geometry input for the watershed limit.
+
+## Shapefiles
 ### Water Data for Texas
 
-Use `query_shapefile()` to retrieve coastal geometry layers from Water Data for Texas.
+Use `query_wdft_shapefile()` to retrieve coastal geometry layers from Water Data for Texas.
 
 ```python
-from water_wrangler import query_shapefile
+from water_wrangler import query_wdft_shapefile
 
-bays = query_shapefile("bay")
-basins = query_shapefile("basin")
-estuaries = query_shapefile("estuary")
-watersheds = query_shapefile("watershed")
+bays = query_wdft_shapefile("bay")
+basins = query_wdft_shapefile("basin")
+estuaries = query_wdft_shapefile("estuary")
+watersheds = query_wdft_shapefile("watershed")
 ```
 
 Use `query_wqtimeseries()` to pull observed water-quality (sonde) timeseries from Water Data for
@@ -97,5 +102,12 @@ salinity = query_wqtimeseries(
 )                                                           # SondeTimeseries
 salinity.plot()
 ```
-
 ---
+
+
+
+
+# To add in future:
+- TX Land Cover
+- ngofs2
+- 
