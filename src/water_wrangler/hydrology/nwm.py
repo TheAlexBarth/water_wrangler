@@ -7,7 +7,8 @@ import pandas as pd
 import xarray as xr
 from .. import shapes
 
-# daily-mean m3/s is kept as-is here; unit conversion happens in the dataset.
+# streamflow m3/s is kept as-is here (daily-mean or hourly per `resolution`);
+# unit conversion happens in the dataset.
 
 #region \- source constants ---------------
 # NWM v3.0 CONUS Retrospective (anonymous S3 Zarr, 1979-02 .. 2023-01, hourly).
@@ -138,7 +139,9 @@ def attach_gauges(reaches: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
 
 def _coastline_rows(flw: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     """Coastline features (shoreline, non-flow) as role='coastline' rows."""
-    coast = flw[flw.get("ftype") == "Coastline"]
+    if "ftype" not in flw.columns:
+        return gpd.GeoDataFrame(columns=["feature_id", "role", "geometry"], crs=flw.crs)
+    coast = flw[flw["ftype"] == "Coastline"]
     if not len(coast):
         return gpd.GeoDataFrame(columns=["feature_id", "role", "geometry"], crs=flw.crs)
     return gpd.GeoDataFrame(
@@ -164,16 +167,13 @@ def select_coastal_reaches(
     crs: str = "EPSG:4326"
 ) -> gpd.GeoDataFrame:
     """
-    NHDPlus flowlines within a boundary, classified and (optionally) gage-crosswalked.
+    NHDPlus flowlines within a boundary, classified and gage-crosswalked.
 
-    Select reaches that are at a network terminus to the tidal bounary
+    Select reaches that are at a network terminus to the tidal boundary.
 
     **Inputs**
         boundary : GeoDataFrame / GeoSeries / shapely geometry of the drainage
         crs : CRS of the boundary
-        gages : attach the retrospective gage crosswalk
-        coastline : also return NHDPlus Coastline features (role='coastline') for
-            estuary delineation on maps; excluded from the inflow math
     **Outputs**
         GeoDataFrame of reaches (feature_id, role, to_comid, geometry, gage_id, gaged)
     """
@@ -183,14 +183,14 @@ def select_coastal_reaches(
     flw = WaterData("nhdflowline_network").bygeom(geom, geo_crs=crs)
     flw.columns = [c.lower() for c in flw.columns]
     reaches = classify(flw)
-    
+
     # Keep reaches whose midpoint falls inside the drainage boundary (so we do not
     # pick up a neighboring estuary's reaches near a loose boundary).
     within = reaches.geometry.representative_point().within(geom)
     reaches = reaches[within].reset_index(drop=True)
 
     # Keep reaches that flow leaves boundary AND is either tidally influenced
-    # or a stream order >= 3. This willd drop minor streams that end inside boundary
+    # or a stream order >= 3. This will drop minor streams that end inside boundary
     within_ids = set(reaches["feature_id"].astype("int64"))
     exits = ~reaches["to_comid"].astype("int64").isin(within_ids)
     order = pd.to_numeric(reaches["streamorde"], errors="coerce").fillna(0)
@@ -210,15 +210,16 @@ def select_coastal_reaches(
 
 
 #region \- streamflow fetch ---------------
-def fetch_streamflow(feature_ids, start=None, end=None):
+def fetch_streamflow(feature_ids, start=None, end=None, resolution="day"):
     """
-    Daily-mean streamflow (m3/s) for the given reaches over a date range.
+    Streamflow (m3/s) for the given reaches over a date range.
 
     **Inputs**
         feature_ids : iterable of NWM feature_ids (NHDPlus COMIDs)
         start, end : date range (defaults: reanalysis start .. today)
+        resolution : "day" for the daily mean (default) or "hour" for the hourly frame
     **Outputs**
-        DataFrame indexed by date, columns = feature_id
+        DataFrame indexed by date (daily) or timestamp (hourly), columns = feature_id
     """
     feature_ids = np.unique(np.asarray(list(feature_ids), dtype="int64"))
     today = pd.Timestamp.now("UTC").tz_localize(None).normalize()
@@ -230,22 +231,22 @@ def fetch_streamflow(feature_ids, start=None, end=None):
 
     frames = []
     if start <= retro_end:  # reanalysis where available
-        frames.append(_read_retro(feature_ids, start, min(end, retro_end)))
+        frames.append(_read_retro(feature_ids, start, min(end, retro_end), resolution))
     op_start, op_end = max(start, retro_end + pd.Timedelta(days=1)), min(end, today)
     if op_end >= op_start:  # operational analysis past the reanalysis, up to today
-        frames.append(_read_files("operational", feature_ids, op_start, op_end))
+        frames.append(_read_files("operational", feature_ids, op_start, op_end, resolution))
     if end > today:  # forecast into the future
-        frames.append(_read_files("forecast", feature_ids, today, end))
+        frames.append(_read_files("forecast", feature_ids, today, end, resolution))
 
     frames = [f for f in frames if not f.empty]
     if not frames:
         return pd.DataFrame()
-    # Stitch: drop the day shared by adjacent sources, keep the first (preferred) one.
+    # drop shared if stiching across sources
     out = pd.concat(frames)
     return out[~out.index.duplicated("first")].sort_index()
 
 
-def _read_retro(feature_ids, start, end):
+def _read_retro(feature_ids, start, end, resolution="day"):
     """Slice the retrospective Zarr store for the requested reaches and window."""
     ds = _open_retro()
     present = np.intersect1d(feature_ids, ds[RETRO["reach_dim"]].values)
@@ -266,12 +267,14 @@ def _read_retro(feature_ids, start, end):
         .sel(time=slice(lo, hi))
         .load()
     )
+    if resolution == "hour":
+        return q.to_pandas()
     return q.resample(time="1D").mean().to_pandas()
 
 
-def _read_files(source, feature_ids, start, end):
+def _read_files(source, feature_ids, start, end, resolution="day"):
     """
-    Daily-mean streamflow from the per-file channel_rt NetCDFs.
+    Streamflow from the per-file channel_rt NetCDFs (daily mean or hourly).
 
     The two file-based products read the same variable and differ only in how the
     files enumerate: operational walks (day x tm) hourly analysis slabs, forecast
@@ -324,7 +327,10 @@ def _read_files(source, feature_ids, start, end):
         return pd.DataFrame()
     out = xr.concat(slabs, dim="time").sortby("time")
     _, keep = np.unique(out["time"].values, return_index=True)
-    return out.isel(time=np.sort(keep)).resample(time="1D").mean().to_pandas()
+    out = out.isel(time=np.sort(keep))
+    if resolution == "hour":
+        return out.to_pandas()
+    return out.resample(time="1D").mean().to_pandas()
 
 
 #endregion streamflow fetch ---------------

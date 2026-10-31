@@ -8,8 +8,9 @@ import pandas as pd
 from ..core.env_timeseries import EnvTimeseries
 from . import nwm, twdb
 
-# daily-mean m3/s -> acre-ft/day (1 acre-ft = 1233.48 m3)
-_CMS_TO_AFD = 86400.0 / 1233.48
+# m3/s -> acre-ft (1 acre-ft = 1233.48 m3)
+_CMS_TO_AFD = 86400.0 / 1233.48  # daily-mean m3/s -> acre-ft/day
+_CMS_TO_AFH = 3600.0 / 1233.48  # hourly m3/s -> acre-ft/hour
 
 _SOURCES = ("nwm", "twdb")
 
@@ -51,8 +52,8 @@ class HydrologyDataset:
                 GeoSeries / shapely geometry); generic (WDFT watershed, HUC8, ...)
             start, end : date range (nwm source auto-selects reanalysis / operational
                 / forecast per the window and stitches across boundaries)
-            **kwargs : source extras -- nwm: crs, method, gages;
-                twdb: watershed, geo_ids, resolution
+            resolution : "day" (default) or "hour"
+            **kwargs : source kwargs nwm: crs; twdb: watershed, geo_ids
         **Outputs**
             HydrologyDataset
         """
@@ -68,18 +69,21 @@ class HydrologyDataset:
         boundary,
         start,
         end,
-        crs="EPSG:4326"
+        crs="EPSG:4326",
+        resolution="day",
     ):
         if boundary is None:
             raise ValueError("nwm source needs a `boundary` (GeoDataFrame or geometry)")
+        if resolution not in ("day", "hour"):
+            raise ValueError(f"nwm resolution must be 'day' or 'hour'; got {resolution!r}")
         reaches = nwm.select_coastal_reaches(boundary, crs=crs)
         # Fetch streamflow for flow reaches only (coastline rows carry no flow).
         flow_ids = reaches.loc[reaches["role"] != "coastline", "feature_id"].values
-        flow = nwm.fetch_streamflow(flow_ids, start=start, end=end)
+        flow = nwm.fetch_streamflow(flow_ids, start=start, end=end, resolution=resolution)
         gauges = reaches.loc[
             reaches["gaged"] == 1, ["feature_id", "gage_id", "geometry"]
         ].reset_index(drop=True)
-        meta = {"label": "streamflow", "units": "m³/s"}
+        meta = {"label": "streamflow", "units": "m³/s", "resolution": resolution}
         return cls(
             "nwm",
             boundary=boundary,
@@ -97,12 +101,23 @@ class HydrologyDataset:
         end,
         watershed=None,
         geo_ids=None,
-        resolution="daily",
+        resolution="day",
     ):
         from ..shapes import query_wdft_shapefile
 
+        # Map the unified resolution onto the TWDB data frequency.
+        if resolution == "day":
+            resolution = "daily"
+        if resolution not in ("daily", "hour", "monthly"):
+            raise ValueError(
+                f"twdb resolution must be 'day', 'hour', or 'monthly'; got {resolution!r}"
+            )
+        if resolution == "monthly" and geo_ids is not None:
+            # The monthly series is the watershed-level geography;
+            raise ValueError("twdb 'monthly' is the watershed-level series; omit `geo_ids`")
+
         gauges = None
-        if resolution == "monthly" and geo_ids is None:
+        if resolution == "monthly":
             if watershed is None:
                 raise ValueError("twdb monthly needs a `watershed` name")
             # One fast request at the watershed level (daily needs the 24 sub-basins).
@@ -115,6 +130,7 @@ class HydrologyDataset:
             gauges = twdb.gauges(watershed)
             if boundary is None:
                 boundary = poly
+            units = "acre-ft/month"
         else:
             if geo_ids is None:
                 if watershed is None:
@@ -131,7 +147,22 @@ class HydrologyDataset:
                 if boundary is None:
                     boundary = poly
             flow = twdb.inflow_timeseries(geo_ids, start=start, end=end)
-        units = "acre-ft/month" if resolution == "monthly" else "acre-ft/day"
+            units = "acre-ft/day"
+            if resolution == "hour":
+                print(
+                    "Warning: TWDB daily inflow spread evenly across hours "
+                    "(constant-rate assumption; not a measured hourly value)."
+                )
+                units = "acre-ft/hour"
+                # Spread each daily value evenly over its 24 hours: forward-fill the
+                # daily series onto an hourly index, then divide every column by 24.
+                if not flow.empty:
+                    hourly_idx = pd.date_range(
+                        flow.index.min(),
+                        flow.index.max() + pd.Timedelta(hours=23),
+                        freq="h",
+                    )
+                    flow = flow.reindex(hourly_idx, method="ffill") / 24.0
         meta = {
             "label": "freshwater inflow",
             "units": units,
@@ -216,22 +247,23 @@ class HydrologyDataset:
 
     def ungaged_inflow(self, subtract=None) -> pd.Series:
         """
-        Ungaged freshwater inflow (acre-ft/day).
+        Ungaged freshwater inflow (acre-ft per resolution).
 
-        nwm  : Σ(terminal) − Σ(subtracted gauges) daily-mean streamflow, in acre-ft/day.
-        twdb : the TxRR `model` column (already modeled ungaged acre-ft/day).
+        nwm  : Σ(terminal) − Σ(subtracted gauges) streamflow, converted per resolution.
+        twdb : the TxRR `model` column (already modeled ungaged, in the loaded units).
 
         **Inputs**
             subtract : optional iterable of USGS site numbers to subtract instead of all
                 crosswalked gauges (e.g. the set your hydrodynamic model ingests)
         **Outputs**
-            date-indexed pandas Series
+            date/timestamp-indexed pandas Series
         """
         if self.source == "twdb":
             return self.flow.get("model", pd.Series(dtype=float)).rename("ungaged")
+        factor = _CMS_TO_AFH if self.meta.get("resolution") == "hour" else _CMS_TO_AFD
         terminal = self.reaches.loc[self.reaches["role"] == "terminal", "feature_id"]
-        total = self._sum_flow(terminal) * _CMS_TO_AFD
-        gaged = self._sum_flow(self.gaged_outlets(subtract=subtract)) * _CMS_TO_AFD
+        total = self._sum_flow(terminal) * factor
+        gaged = self._sum_flow(self.gaged_outlets(subtract=subtract)) * factor
         return (total - gaged).clip(lower=0).rename("ungaged")
 
     def adjust_with_gauges(self, add=None, subtract=None) -> "EnvTimeseries":
@@ -245,8 +277,22 @@ class HydrologyDataset:
         **Outputs**
             EnvTimeseries of the adjusted inflow (acre-ft/day)
         """
+        if self.meta.get("resolution") == "hour":
+            raise ValueError(
+                "adjust_with_gauges uses daily USGS data (get_dv); not available at "
+                "resolution='hour'"
+            )
         base = self.ungaged_inflow()
-        obs = self._usgs_daily(list(add or []) + list(subtract or []))
+        sites = list(add or []) + list(subtract or [])
+        obs = self._usgs_daily(sites)
+        # Check for data gaps in USGS gauge data
+        for s in sites:
+            missing = int(obs[s].reindex(base.index).isna().sum())
+            if missing:
+                raise ValueError(
+                    f"gauge {s} is missing {missing} daily USGS observation(s) over the "
+                    "window; cannot adjust without silently dropping flow"
+                )
         for s in add or []:
             base = base.add(obs[s] * _CMS_TO_AFD, fill_value=0)
         for s in subtract or []:
@@ -296,9 +342,12 @@ class HydrologyDataset:
                 }
                 data = self.flow
             else:
+                factor = (
+                    _CMS_TO_AFH if self.meta.get("resolution") == "hour" else _CMS_TO_AFD
+                )
                 terminal = self.reaches.loc[self.reaches["role"] == "terminal", "feature_id"]
-                total = self._sum_flow(terminal) * _CMS_TO_AFD
-                gaged = self._sum_flow(self.gaged_outlets(subtract=subtract)) * _CMS_TO_AFD
+                total = self._sum_flow(terminal) * factor
+                gaged = self._sum_flow(self.gaged_outlets(subtract=subtract)) * factor
                 # Gauged inflow cannot exceed the total reaching the mouths; capping it keeps
                 # gauged + ungauged == total exactly (a day's gauge mean can briefly top the
                 # routed terminal flow). ungaged == max(total - gauged, 0) either way.
@@ -310,9 +359,10 @@ class HydrologyDataset:
                         "ungaged": total - gaged,
                     }
                 )
+                units = "acre-ft/hour" if self.meta.get("resolution") == "hour" else "acre-ft/day"
                 meta = {
                     "label": "freshwater inflow",
-                    "units": "acre-ft/day",
+                    "units": units,
                     "title": "NWM inflow at river mouths",
                 }
         elif kind == "gauge":
@@ -327,7 +377,7 @@ class HydrologyDataset:
             data = self._sum_flow(match).rename(str(id))
         elif kind in ("reach", "node"):
             if self.source != "nwm":
-               raise ValueError("kind='reach' is only available for the nwm source")
+                raise ValueError("kind='reach' is only available for the nwm source")
             fid = int(id)
             if fid not in self.flow.columns:
                 raise ValueError(f"feature_id {fid} not in fetched streamflow")
