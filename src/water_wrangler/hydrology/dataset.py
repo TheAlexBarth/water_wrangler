@@ -6,13 +6,13 @@
 import pandas as pd
 
 from ..core.env_timeseries import EnvTimeseries
-from . import nwm, twdb
+from . import nwm, twdb, usgs
 
 # m3/s -> acre-ft (1 acre-ft = 1233.48 m3)
 _CMS_TO_AFD = 86400.0 / 1233.48  # daily-mean m3/s -> acre-ft/day
 _CMS_TO_AFH = 3600.0 / 1233.48  # hourly m3/s -> acre-ft/hour
 
-_SOURCES = ("nwm", "twdb")
+_SOURCES = ("nwm", "twdb", "usgs")
 
 
 class HydrologyDataset:
@@ -47,20 +47,25 @@ class HydrologyDataset:
         Load hydrologic flows for a boundary.
 
         **Inputs**
-            source : {"nwm", "twdb"}
-            boundary : drainage boundary for NWM reach selection (GeoDataFrame /
-                GeoSeries / shapely geometry); generic (WDFT watershed, HUC8, ...)
+            source : {"nwm", "twdb", "usgs"}
+            boundary : drainage boundary for NWM / USGS gauge selection (GeoDataFrame
+                / GeoSeries / shapely geometry); generic (WDFT watershed, HUC8, ...)
             start, end : date range (nwm source auto-selects reanalysis / operational
                 / forecast per the window and stitches across boundaries)
             resolution : "day" (default) or "hour"
-            **kwargs : source kwargs nwm: crs; twdb: watershed, geo_ids
+            **kwargs : source kwargs nwm: crs; twdb: watershed, geo_ids;
+                usgs: crs, most_downstream
         **Outputs**
             HydrologyDataset
         """
         if source not in _SOURCES:
-            raise ValueError(f"unknown source '{source}'; choose 'nwm' or 'twdb'")
+            raise ValueError(
+                f"unknown source '{source}'; choose 'nwm', 'twdb', or 'usgs'"
+            )
         if source == "twdb":
             return cls._load_twdb(boundary, start, end, **kwargs)
+        if source == "usgs":
+            return cls._load_usgs(boundary, start, end, **kwargs)
         return cls._load_nwm(boundary, start, end, **kwargs)
 
     @classmethod
@@ -174,6 +179,63 @@ class HydrologyDataset:
             "twdb", boundary=boundary, reaches=None, flow=flow, gauges=gauges, meta=meta
         )
 
+    @classmethod
+    def _load_usgs(
+        cls,
+        boundary,
+        start,
+        end,
+        crs="EPSG:4326",
+        resolution="day",
+        most_downstream=True,
+    ):
+        """
+        Observed USGS discharge for the gauges within a boundary.
+
+        Discovers active discharge gauges in the boundary (NWIS site service) and,
+        when `most_downstream`, keeps only the downstream-most gauge in each chain.
+        Topology comes from the NWM NHDPlus.
+        """
+        if boundary is None:
+            raise ValueError("usgs source needs a `boundary` (GeoDataFrame or geometry)")
+        if resolution not in ("day", "hour"):
+            raise ValueError(
+                f"usgs resolution must be 'day' or 'hour'; got {resolution!r}"
+            )
+        reaches = nwm.select_coastal_reaches(boundary, crs=crs)
+        found = usgs.find_gauges(boundary, crs=crs)
+
+        # Downstream-most among the found sites, via the NWM gage crosswalk/topology.
+        found_sites = set(found["site_no"].astype(str))
+        gaged = reaches[(reaches["gaged"] == 1) & (reaches["gage_id"].astype(str).isin(found_sites))]
+        dmap = dict(
+            zip(
+                reaches["feature_id"].astype("int64"),
+                reaches["to_comid"].astype("int64"),
+            )
+        )
+        outlets = set(nwm.downstream_most(gaged["feature_id"].astype("int64"), dmap))
+        downstream_sites = set(
+            gaged.loc[gaged["feature_id"].astype("int64").isin(outlets), "gage_id"].astype(str)
+        )
+        # Sites NWIS found but the crosswalk does not know have unknown topology; keep them.
+        crosswalked = set(gaged["gage_id"].astype(str))
+        downstream_sites |= found_sites - crosswalked
+        found = found.copy()
+        found["downstream_most"] = found["site_no"].astype(str).isin(downstream_sites)
+
+        sites = sorted(downstream_sites) if most_downstream else sorted(found_sites)
+        flow = usgs.fetch_discharge(sites, start=start, end=end, resolution=resolution)
+        meta = {"label": "streamflow", "units": "m³/s", "resolution": resolution}
+        return cls(
+            "usgs",
+            boundary=boundary,
+            reaches=reaches,
+            flow=flow,
+            gauges=found,
+            meta=meta,
+        )
+
     #endregion loaders ---------------
 
     #region \- processing ---------------
@@ -186,26 +248,13 @@ class HydrologyDataset:
 
     def _downstream_most(self, gaged):
         """Drop reaches nested upstream of another in the set (keep downstream-most)."""
-        gaged = set(int(g) for g in gaged)
         dmap = dict(
             zip(
                 self.reaches["feature_id"].astype("int64"),
                 self.reaches["to_comid"].astype("int64"),
             )
         )
-        keep = []
-        for g in gaged:
-            others = gaged - {g}
-            c, seen, nested = dmap.get(g, 0), {g}, False
-            while c and c not in seen:
-                if c in others:
-                    nested = True
-                    break
-                seen.add(c)
-                c = dmap.get(c, 0)
-            if not nested:
-                keep.append(g)
-        return keep
+        return nwm.downstream_most(gaged, dmap)
 
     def gaged_outlets(self, subtract=None):
         """
@@ -270,58 +319,54 @@ class HydrologyDataset:
         """
         Blend observed USGS gauge flows into the ungaged watershed-exit series.
 
-        Independent, user-driven step -- not a baked aggregation.
-
         **Inputs**
             add, subtract : iterables of USGS site numbers to add / subtract
         **Outputs**
-            EnvTimeseries of the adjusted inflow (acre-ft/day)
+            EnvTimeseries of the adjusted inflow (acre-ft per resolution)
         """
-        if self.meta.get("resolution") == "hour":
-            raise ValueError(
-                "adjust_with_gauges uses daily USGS data (get_dv); not available at "
-                "resolution='hour'"
-            )
+        hourly = self.meta.get("resolution") == "hour"
+        factor = _CMS_TO_AFH if hourly else _CMS_TO_AFD
+        res = "hour" if hourly else "day"
         base = self.ungaged_inflow()
         sites = list(add or []) + list(subtract or [])
-        obs = self._usgs_daily(sites)
-        # Check for data gaps in USGS gauge data
-        for s in sites:
-            missing = int(obs[s].reindex(base.index).isna().sum())
-            if missing:
-                raise ValueError(
-                    f"gauge {s} is missing {missing} daily USGS observation(s) over the "
-                    "window; cannot adjust without silently dropping flow"
-                )
+        obs = self._observed_discharge(sites, base.index, resolution=res)
         for s in add or []:
-            base = base.add(obs[s] * _CMS_TO_AFD, fill_value=0)
+            base = base.add(obs[str(s)] * factor, fill_value=0)
         for s in subtract or []:
-            base = base.sub(obs[s] * _CMS_TO_AFD, fill_value=0)
+            base = base.sub(obs[str(s)] * factor, fill_value=0)
         meta = {
             "label": "freshwater inflow (gauge-adjusted)",
-            "units": "acre-ft/day",
+            "units": "acre-ft/hour" if hourly else "acre-ft/day",
             "title": self.meta.get("title", ""),
         }
         return EnvTimeseries(base.clip(lower=0).rename("ungaged_adj"), meta)
 
-    @staticmethod
-    def _usgs_daily(sites):
-        """Daily USGS discharge (00060) per site, converted cfs -> m3/s."""
-        from dataretrieval import nwis  # lazy [hydrology] dep
+    def _observed_discharge(self, sites, index, resolution="day"):
+        """
+        Observed USGS discharge (m3/s) for the sites, aligned to `index`.
 
-        out = {}
+        """
+        start = index.min().strftime("%Y-%m-%d") if len(index) else None
+        end = index.max().strftime("%Y-%m-%d") if len(index) else None
+        obs = usgs.fetch_discharge(sites, start=start, end=end, resolution=resolution)
         for s in sites:
-            df, _ = nwis.get_dv(sites=s, parameterCd="00060")
-            col = [c for c in df.columns if "00060" in c][0]
-            series = df[col].astype(float) * 0.0283168
-            series.index = pd.to_datetime(series.index).tz_localize(None)
-            out[s] = series
-        return out
+            # fetch_discharge drops sites with no data for the window; treat an
+            # absent column as fully missing so the error below is informative.
+            col = obs[str(s)] if str(s) in obs.columns else pd.Series(dtype=float)
+            missing = int(col.reindex(index).isna().sum())
+            if missing:
+                raise ValueError(
+                    f"gauge {s} is missing {missing} USGS observation(s) over the "
+                    "window; cannot use observed data without silently dropping flow"
+                )
+        return obs
 
     #endregion processing ---------------
 
     #region \- env timeseries bridge ---------------
-    def to_env_timeseries(self, kind: str, id=None, subtract=None) -> "EnvTimeseries":
+    def to_env_timeseries(
+        self, kind: str, id=None, subtract=None, gauge_source="modeled"
+    ) -> "EnvTimeseries":
         """
         Collapse to a single-point line-series as an EnvTimeseries.
 
@@ -330,9 +375,15 @@ class HydrologyDataset:
             id   : gauge id (kind="gauge") or feature_id (kind="reach"/"node")
             subtract : for kind="total" (nwm), optional USGS site numbers to
                 subtract instead of all crosswalked gauges (see ungaged_inflow)
+            gauge_source : for kind="total" (nwm), {"modeled", "observed"}. Defaults to NWM but can
+                replace with USGS obs
         **Outputs**
             EnvTimeseries
         """
+        if gauge_source not in ("modeled", "observed"):
+            raise ValueError(
+                f"gauge_source must be 'modeled' or 'observed'; got {gauge_source!r}"
+            )
         if kind == "total":
             if self.source == "twdb":
                 meta = {
@@ -341,29 +392,67 @@ class HydrologyDataset:
                     "title": self.meta.get("title", "TWDB TxRR inflow"),
                 }
                 data = self.flow
+            elif self.source == "usgs":
+                # Observed inflow = sum of the downstream-most gauges' discharge.
+                factor = (
+                    _CMS_TO_AFH if self.meta.get("resolution") == "hour" else _CMS_TO_AFD
+                )
+                dsm = self.gauges.loc[self.gauges["downstream_most"], "site_no"].astype(str)
+                cols = [c for c in self.flow.columns if str(c) in set(dsm)]
+                total = (
+                    self.flow[cols].sum(axis=1) * factor
+                    if cols
+                    else pd.Series(dtype=float)
+                )
+                units = "acre-ft/hour" if self.meta.get("resolution") == "hour" else "acre-ft/day"
+                data = total.rename("total")
+                meta = {
+                    "label": "freshwater inflow",
+                    "units": units,
+                    "title": "USGS observed inflow at gauges",
+                }
             else:
                 factor = (
                     _CMS_TO_AFH if self.meta.get("resolution") == "hour" else _CMS_TO_AFD
                 )
                 terminal = self.reaches.loc[self.reaches["role"] == "terminal", "feature_id"]
                 total = self._sum_flow(terminal) * factor
-                gaged = self._sum_flow(self.gaged_outlets(subtract=subtract)) * factor
-                # Gauged inflow cannot exceed the total reaching the mouths; capping it keeps
-                # gauged + ungauged == total exactly (a day's gauge mean can briefly top the
-                # routed terminal flow). ungaged == max(total - gauged, 0) either way.
-                gaged = gaged.clip(upper=total)
+                if gauge_source == "observed":
+                    # Substitute observed USGS discharge at the gaged outlets: the gauged
+                    # term is the real gauge reading, total = modeled ungaged + observed.
+                    outlets = self.gaged_outlets(subtract=subtract)
+                    g2s = dict(
+                        zip(
+                            self.reaches["feature_id"].astype("int64"),
+                            self.reaches["gage_id"].astype(str),
+                        )
+                    )
+                    sites = sorted({g2s[int(o)] for o in outlets if g2s.get(int(o))})
+                    res = "hour" if self.meta.get("resolution") == "hour" else "day"
+                    ungaged = (total - self._sum_flow(outlets) * factor).clip(lower=0)
+                    if sites:
+                        obs = self._observed_discharge(sites, self.flow.index, resolution=res)
+                        gaged = obs.reindex(self.flow.index)[sites].sum(axis=1) * factor
+                    else:
+                        gaged = pd.Series(0.0, index=self.flow.index)
+                    total = ungaged + gaged
+                    title = "NWM inflow at river mouths (observed gauges)"
+                else:
+                    gaged = self._sum_flow(self.gaged_outlets(subtract=subtract)) * factor
+                    # Gauged inflow cannot exceed the total reaching the mouths; capping it
+                    # keeps gauged + ungauged == total exactly (a day's gauge mean can briefly
+                    # top the routed terminal flow). ungaged == max(total - gauged, 0) either way.
+                    gaged = gaged.clip(upper=total)
+                    ungaged = total - gaged
+                    title = "NWM inflow at river mouths"
                 data = pd.DataFrame(
-                    {
-                        "total": total,
-                        "gaged": gaged,
-                        "ungaged": total - gaged,
-                    }
+                    {"total": total, "gaged": gaged, "ungaged": ungaged}
                 )
                 units = "acre-ft/hour" if self.meta.get("resolution") == "hour" else "acre-ft/day"
                 meta = {
                     "label": "freshwater inflow",
                     "units": units,
-                    "title": "NWM inflow at river mouths",
+                    "title": title,
                 }
         elif kind == "gauge":
             if self.source != "nwm":
@@ -388,8 +477,16 @@ class HydrologyDataset:
         return EnvTimeseries(data, meta)
 
     # short helper
-    def total_inflow(self):
-        return self.to_env_timeseries('total')
+    def total_inflow(self, gauge_source="modeled", subtract=None):
+        """
+        Total freshwater inflow as an EnvTimeseries.
+
+        For the nwm source, `gauge_source="observed"` substitutes real USGS
+        discharge at the gaged outlets into the total (see to_env_timeseries).
+        """
+        return self.to_env_timeseries(
+            "total", subtract=subtract, gauge_source=gauge_source
+        )
 
     #endregion env timeseries bridge ---------------
 

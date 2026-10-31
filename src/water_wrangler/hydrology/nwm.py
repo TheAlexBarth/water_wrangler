@@ -122,6 +122,36 @@ def classify(
     return out.drop_duplicates(subset="feature_id").reset_index(drop=True)
 
 
+def downstream_most(feature_ids, to_comid_map) -> list:
+    """
+    Keep only the downstream-most reach in each chain.
+
+    Walks the `feature_id -> downstream feature_id` graph and drops any reach that
+    is nested upstream of another reach in the set, so a gauged reach's flow is not
+    counted (or subtracted) twice. Shared by the nwm and usgs gauge logic.
+
+    **Inputs**
+        feature_ids : iterable of reach feature_ids (NHDPlus COMIDs)
+        to_comid_map : dict feature_id -> downstream feature_id (0 for a terminus)
+    **Outputs**
+        list of the downstream-most feature_ids
+    """
+    gaged = set(int(g) for g in feature_ids)
+    keep = []
+    for g in gaged:
+        others = gaged - {g}
+        c, seen, nested = to_comid_map.get(g, 0), {g}, False
+        while c and c not in seen:
+            if c in others:
+                nested = True
+                break
+            seen.add(c)
+            c = to_comid_map.get(c, 0)
+        if not nested:
+            keep.append(g)
+    return keep
+
+
 def attach_gauges(reaches: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     """
     Crosswalk `gage_id`/`gaged` onto reaches from the retrospective Zarr gage var.
