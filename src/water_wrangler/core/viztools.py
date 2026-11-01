@@ -13,13 +13,6 @@ class VizMixin:
     """
 
     Plotting tools:
-        Userside:
-        - show variable
-        - show mesh
-        - show quiver
-        Hidden:
-
-
 
     """
     #region \- Full Plot --------------------
@@ -35,8 +28,7 @@ class VizMixin:
                      bnd_kwargs = {},
                      **kwargs):
         """
-        Function that standardizes the process of displaying model outputs using the
-        pre-defined display settings for each variable type.
+        Ploting single variable
 
         **Inputs**
             variable (str) : The data variable to be displayed. String should match one
@@ -52,9 +44,6 @@ class VizMixin:
         """
         self._ensure_mesh()
 
-        # need to update here to reflect
-        # that it has already read in a data structure and not pulling from
-        # a baycast configuration
         data = self._select_datavar(variable, tind, time, vlayer)
 
         # Generate an appropriate title for the image

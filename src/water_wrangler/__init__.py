@@ -2,14 +2,25 @@
 Coastal Science Data Accessing and Wrangling
 """
 
-from .baycast_dataset import BaycastDataset
-from .io import load_baycast, query_baycast, query_shapefile
-
+from .core.env_timeseries import EnvTimeseries
+from .hydrodynamic.dataset import HydrodynamicDataset
+from .hydrodynamic import query_hydrodynamic, load_hydrodynamic
+from .wq.dataset import SondeTimeseries
+from .wq import query_wqtimeseries
+from .hydrology.dataset import HydrologyDataset
+from .hydrology import query_hydrology
+from .shapes import query_wdft_shapefile, query_huc_watershed
 
 
 __all__ = [
-    "BaycastDataset",
-    "load_baycast",
-    "query_baycast",
-    'query_shapefile'
+    "HydrodynamicDataset",
+    "EnvTimeseries",
+    "SondeTimeseries",
+    "HydrologyDataset",
+    "query_hydrodynamic",
+    "load_hydrodynamic",
+    "query_wqtimeseries",
+    "query_hydrology",
+    "query_wdft_shapefile",
+    "query_huc_watershed",
 ]

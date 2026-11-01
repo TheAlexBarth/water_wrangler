@@ -1,5 +1,3 @@
-from zipfile import Path
-
 import rasterio
 from scipy.spatial import cKDTree
 from scipy import ndimage
@@ -33,21 +31,31 @@ class MeshMixin:
             mask_kwargs = {}
         ndist = mask_kwargs.get('neighbor_dist', 200)
         if use_mask:
-            poss_areas = {
-                'texas': '00-full_estuary.tif',
-                'sabine-neches':  '00-sabine_neches.tif',
-                'trinity-sanjacinto': '00-trinity_sanjacinto.tif',
-                'colorado-lavaca': "00-colorado_lavaca.tif",
-                'guadalupe': "00-guadalupe.tif",
-                'mission-aransas': '00-mission_aransas.tif',
-                'nueces': "00-nueces.tif",
-                'upper-lagunamadre': '00-upper_laguna_madre.tif',
-                'lower-lagunamadre': '00-lower_laguna_madre.tif'
-            }
-            if area not in poss_areas.keys():
+            area = area.lower()
+            match area:
+                case 'texas' | 'all':
+                    mask_name = '00-full_estuary.tif'
+                case 'sabine-neches' | 'sabine' | 'sabine_lake':
+                    mask_name = '00-sabine_neches.tif'
+                case 'trinity-sanjacinto' | 'galveston' | 'galv' | 'galveston_bay':
+                    mask_name = '00-trinity_sanjacinto.tif'
+                case 'colorado-lavaca' | 'matagorda' | 'mata' | 'matagorda_bay':
+                    mask_name = "00-colorado_lavaca.tif"
+                case 'guadalupe' | 'san_antonio_bay' | 'sabs' | 'san_antonio':
+                    mask_name = "00-guadalupe.tif"
+                case 'mission-aransas' | 'mae' | 'aransas':
+                    mask_name = '00-mission_aransas.tif'
+                case 'nueces' | 'corpus_christi_bay' | 'ccb':
+                    mask_name = "00-nueces.tif"
+                case 'upper-lagunamadre' | 'ulm' | 'baff' | 'baffin' | 'baffin_bay':
+                    mask_name = '00-upper_laguna_madre.tif'
+                case 'lower-lagunamadre' | 'llm' :
+                    mask_name = '00-lower_laguna_madre.tif'
+                case _:
+                    mask_name = None
+            if mask_name is None:
                 raise ValueError(f"{area} not in preset regions; {[a for a in poss_areas.keys()]}")
             else:
-                mask_name = poss_areas[area]
                 with self._data_resource_path(mask_name) as mask_path:
                     return self.subset_with_mask(mask_file = str(mask_path), neighbor_dist=ndist)
         else:
