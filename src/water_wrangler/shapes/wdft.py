@@ -1,11 +1,8 @@
-# shape/grid geometries from the Water Data for Texas (WDFT) API
+# watershed / grid geometries from the Water Data for Texas (WDFT) API
 
 import json
-import numpy as np
 import requests
 import geopandas as gpd
-import rasterio
-from rasterio.features import rasterize
 from shapely.geometry import shape
 
 
@@ -45,21 +42,3 @@ def query_wdft_shapefile(geo_type: str):
         records.append(rec)
     gdf = gpd.GeoDataFrame(records, geometry=geometries, crs="EPSG:4326")
     return gdf
-
-#region \- helpers ---------
-def _as_geom(boundary):
-    """
-    Dissolve a GeoDataFrame/GeoSeries to a single geometry; pass geometries through.
-
-    Invalid boundary polygons (some WDFT shapes self-intersect) are repaired with a
-    zero-width buffer first, so they do not trip GEOS during the union or the
-    within/intersects reach selection.
-    """
-    geom = getattr(boundary, "geometry", boundary)
-    if hasattr(geom, "union_all") or hasattr(geom, "unary_union"):
-        if not geom.is_valid.all():
-            geom = geom.buffer(0)
-        return geom.union_all() if hasattr(geom, "union_all") else geom.unary_union
-    if not geom.is_valid:
-        geom = geom.buffer(0)
-    return geom

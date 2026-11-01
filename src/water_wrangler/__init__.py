@@ -9,7 +9,7 @@ from .wq.dataset import SondeTimeseries
 from .wq import query_wqtimeseries
 from .hydrology.dataset import HydrologyDataset
 from .hydrology import query_hydrology
-from .shapes import query_wdft_shapefile
+from .shapes import query_wdft_shapefile, query_huc_watershed
 
 
 __all__ = [
@@ -22,4 +22,5 @@ __all__ = [
     "query_wqtimeseries",
     "query_hydrology",
     "query_wdft_shapefile",
+    "query_huc_watershed",
 ]

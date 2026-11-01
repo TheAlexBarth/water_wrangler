@@ -58,12 +58,15 @@ def gauges(watershed: str | None = None) -> gpd.GeoDataFrame:
 
 #region \- timeseries ---------------
 def _geography_csv(session: requests.Session, gid) -> pd.DataFrame | None:
-    """Fetch one geography's CSV, keeping only the inflow columns."""
+    """Fetch one geography's CSV, keeping only the inflow columns (None if unavailable)."""
     resp = session.get(
         f"{TWDB_BASE_URL}/hydrology/geography/{gid}/timeseries",
         params={"output_format": "csv"},
     )
-    resp.raise_for_status()
+    # Some geographies intermittently 500; skip them rather than failing the whole watershed.
+    if not resp.ok:
+        print(f"twdb: skipping geography {gid} (HTTP {resp.status_code})")
+        return None
     df = pd.read_csv(io.StringIO(resp.text), parse_dates=["date"]).set_index("date")
     cols = [c for c in INFLOW_COLS if c in df.columns]
     return df[cols] if cols else None
