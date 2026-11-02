@@ -76,6 +76,8 @@ class HydrologyDataset:
         end,
         crs="EPSG:4326",
         resolution="day",
+        workers=nwm._MAX_WORKERS,
+        cache_dir=None,
     ):
         if boundary is None:
             raise ValueError("nwm source needs a `boundary` (GeoDataFrame or geometry)")
@@ -84,7 +86,10 @@ class HydrologyDataset:
         reaches = nwm.select_coastal_reaches(boundary, crs=crs)
         # Fetch streamflow for flow reaches only (coastline rows carry no flow).
         flow_ids = reaches.loc[reaches["role"] != "coastline", "feature_id"].values
-        flow = nwm.fetch_streamflow(flow_ids, start=start, end=end, resolution=resolution)
+        flow = nwm.fetch_streamflow(
+            flow_ids, start=start, end=end, resolution=resolution,
+            workers=workers, cache_dir=cache_dir,
+        )
         gauges = reaches.loc[
             reaches["gaged"] == 1, ["feature_id", "gage_id", "geometry"]
         ].reset_index(drop=True)

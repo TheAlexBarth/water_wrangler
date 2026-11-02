@@ -1,6 +1,8 @@
 # National Water Model (NWM) streamflow + NHDPlus reach handling.
 # tools largely handled in dataset.py
 
+import os
+
 import geopandas as gpd
 import numpy as np
 import pandas as pd
@@ -54,6 +56,15 @@ BACKENDS = {
     },
 }
 _AWS_FLOOR = pd.Timestamp("2025-01-01")  # AWS NODD rolling-window start
+
+# Per-file channel_rt NetCDF reads are open-overhead bound (HDF5 metadata over HTTP).
+# We fan them out across threads and cache whole files to local disk so reruns /
+# incremental date extensions are near-free.
+_MAX_WORKERS = 16  # ThreadPoolExecutor width for per-file opens
+_CACHE_DIR = os.environ.get(
+    "WATER_WRANGLER_NWM_CACHE",
+    os.path.join(os.path.expanduser("~"), ".cache", "water_wrangler", "nwm"),
+)
 #endregion source constants ---------------
 
 
@@ -240,7 +251,14 @@ def select_coastal_reaches(
 
 
 #region \- streamflow fetch ---------------
-def fetch_streamflow(feature_ids, start=None, end=None, resolution="day"):
+def fetch_streamflow(
+    feature_ids,
+    start=None,
+    end=None,
+    resolution="day",
+    workers=_MAX_WORKERS,
+    cache_dir=None,
+):
     """
     Streamflow (m3/s) for the given reaches over a date range.
 
@@ -248,6 +266,8 @@ def fetch_streamflow(feature_ids, start=None, end=None, resolution="day"):
         feature_ids : iterable of NWM feature_ids (NHDPlus COMIDs)
         start, end : date range (defaults: reanalysis start .. today)
         resolution : "day" for the daily mean (default) or "hour" for the hourly frame
+        workers : thread-pool width for the per-file operational/forecast reads
+        cache_dir : on-disk file cache for the per-file reads
     **Outputs**
         DataFrame indexed by date (daily) or timestamp (hourly), columns = feature_id
     """
@@ -264,9 +284,19 @@ def fetch_streamflow(feature_ids, start=None, end=None, resolution="day"):
         frames.append(_read_retro(feature_ids, start, min(end, retro_end), resolution))
     op_start, op_end = max(start, retro_end + pd.Timedelta(days=1)), min(end, today)
     if op_end >= op_start:  # operational analysis past the reanalysis, up to today
-        frames.append(_read_files("operational", feature_ids, op_start, op_end, resolution))
+        frames.append(
+            _read_files(
+                "operational", feature_ids, op_start, op_end, resolution,
+                workers=workers, cache_dir=cache_dir,
+            )
+        )
     if end > today:  # forecast into the future
-        frames.append(_read_files("forecast", feature_ids, today, end, resolution))
+        frames.append(
+            _read_files(
+                "forecast", feature_ids, today, end, resolution,
+                workers=workers, cache_dir=cache_dir,
+            )
+        )
 
     frames = [f for f in frames if not f.empty]
     if not frames:
@@ -302,7 +332,10 @@ def _read_retro(feature_ids, start, end, resolution="day"):
     return q.resample(time="1D").mean().to_pandas()
 
 
-def _read_files(source, feature_ids, start, end, resolution="day"):
+def _read_files(
+    source, feature_ids, start, end, resolution="day",
+    workers=_MAX_WORKERS, cache_dir=None,
+):
     """
     Streamflow from the per-file channel_rt NetCDFs (daily mean or hourly).
 
@@ -311,8 +344,12 @@ def _read_files(source, feature_ids, start, end, resolution="day"):
     walks forecast hours from one init cycle (member 1, horizon spanning the
     window). The NODD mirror is chosen per file from its date -- AWS inside its
     rolling window, else the GCS archive.
+
+    Files are opened concurrently (`workers` threads) and whole-file cached to
+    `cache_dir`
     """
     import fsspec  # lazy [hydrology] dep
+    from concurrent.futures import ThreadPoolExecutor
 
     files = []  # (uri, mirror_cfg)
     if source == "operational":
@@ -335,24 +372,38 @@ def _read_files(source, feature_ids, start, end, resolution="day"):
             )
             files.append((f"{base}/{fname}", be))
 
-    fs_cache: dict = {}
-    slabs = []
-    for uri, be in files:
-        fs = fs_cache.setdefault(
-            be["protocol"], fsspec.filesystem(be["protocol"], **be["storage_options"])
+    # One whole-file-caching filesystem per backend protocol in play, built up front
+    # so the worker threads only ever read from (never mutate) the mapping.
+    cache_root = cache_dir or _CACHE_DIR
+    fs_by_proto: dict = {}
+    for proto, be in {be["protocol"]: be for _, be in files}.items():
+        fs_by_proto[proto] = fsspec.filesystem(
+            "filecache",
+            target_protocol=proto,
+            target_options=be["storage_options"],
+            cache_storage=os.path.join(cache_root, proto),
         )
-        if not fs.exists(uri):
-            continue
-        with fs.open(uri) as fh:
-            ds = xr.open_dataset(fh, engine="h5netcdf")
-            fids = ds["feature_id"].values
-            idx = np.searchsorted(fids, feature_ids)
-            ok = fids[np.clip(idx, 0, len(fids) - 1)] == feature_ids
-            da = ds["streamflow"].isel(feature_id=idx[ok])
-            da = da.assign_coords(feature_id=feature_ids[ok])
-            # streamflow carries only feature_id; attach the valid time so concat
-            # builds a proper datetime axis.
-            slabs.append(da.expand_dims(time=ds["time"].values).load())
+
+    def _one(item):
+        uri, be = item
+        fs = fs_by_proto[be["protocol"]]
+        try:
+            with fs.open(uri) as fh:
+                ds = xr.open_dataset(fh, engine="h5netcdf")
+                fids = ds["feature_id"].values
+                idx = np.searchsorted(fids, feature_ids)
+                ok = fids[np.clip(idx, 0, len(fids) - 1)] == feature_ids
+                da = ds["streamflow"].isel(feature_id=idx[ok])
+                da = da.assign_coords(feature_id=feature_ids[ok])
+                # streamflow carries only feature_id; attach the valid time so concat
+                # builds a proper datetime axis.
+                return da.expand_dims(time=ds["time"].values).load()
+        except FileNotFoundError:
+            # Absent object (e.g. an AWS rolling-window edge) -- old code skipped these.
+            return None
+
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as ex:
+        slabs = [s for s in ex.map(_one, files) if s is not None]
     if not slabs:
         return pd.DataFrame()
     out = xr.concat(slabs, dim="time").sortby("time")
