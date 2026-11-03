@@ -12,7 +12,10 @@ def query_hydrology(source: str = "nwm", **kwargs) -> "HydrologyDataset":
     **Outputs**
         HydrologyDataset
     """
-    return HydrologyDataset.load(source=source, **kwargs)
-
-
-__all__ = ["HydrologyDataset", "query_hydrology"]
+    if source == "nwm" or source == "usgs":
+        if "boundary" in kwargs:
+            HydrologyDataset.load(source=source, **kwargs)
+        elif "boundaries" in kwargs:
+            HydrologyDataset.load_many(kwargs.pop("boundaries"), source=source, **kwargs)
+        else:
+            raise ValueError("Must provide either `boundary` or `boundaries`")

@@ -3,6 +3,7 @@
 # series only at a single node/gauge/watershed-exit via to_env_timeseries.
 # Reference pattern for the NWM/TWDB internals: ../temp_nwm_code.
 
+import numpy as np
 import pandas as pd
 
 from ..core.env_timeseries import EnvTimeseries
@@ -78,6 +79,8 @@ class HydrologyDataset:
         resolution="day",
         workers=nwm._MAX_WORKERS,
         cache_dir=None,
+        store=None,
+        retain_raw=True,
     ):
         if boundary is None:
             raise ValueError("nwm source needs a `boundary` (GeoDataFrame or geometry)")
@@ -88,7 +91,7 @@ class HydrologyDataset:
         flow_ids = reaches.loc[reaches["role"] != "coastline", "feature_id"].values
         flow = nwm.fetch_streamflow(
             flow_ids, start=start, end=end, resolution=resolution,
-            workers=workers, cache_dir=cache_dir,
+            workers=workers, cache_dir=cache_dir, store=store, retain_raw=retain_raw,
         )
         gauges = reaches.loc[
             reaches["gaged"] == 1, ["feature_id", "gage_id", "geometry"]
@@ -102,6 +105,75 @@ class HydrologyDataset:
             gauges=gauges,
             meta=meta,
         )
+
+    @classmethod
+    def load_many(
+        cls,
+        boundaries,
+        source: str = "nwm",
+        start=None,
+        end=None,
+        crs="EPSG:4326",
+        resolution="day",
+        workers=nwm._MAX_WORKERS,
+        cache_dir=None,
+        store=None,
+        retain_raw=True,
+    ) -> dict:
+        """
+        Load several NWM boundaries that share one streamflow fetch.
+
+        Selects reaches per boundary, then fetches the *union* of their feature_ids in a
+        single pass - this is an I/O speed up if boundaries are provided
+
+        NOTE: each returned dataset is independent any may contain overlapping reaches
+        if the boundaries themselves overlap.
+
+        **Inputs**
+            boundaries : mapping {key: boundary} or an iterable of boundaries
+            source : only "nwm" is supported (the per-file fetch is NWM-specific)
+            start, end, crs, resolution, workers, cache_dir : as `load()`
+        **Outputs**
+            dict {key: HydrologyDataset}  (keys are 0..n-1 if an iterable was given)
+        """
+        if source != "nwm":
+            raise ValueError("load_many is only implemented for the nwm source")
+        items = list(boundaries.items()) if isinstance(boundaries, dict) else list(enumerate(boundaries))
+
+        # identify reaches per boundary (cheap NHDPlus query); collect the union of ids
+        reaches_by_key = {}
+        union = set()
+        for key, boundary in items:
+            if boundary is None:
+                raise ValueError("nwm source needs a `boundary` for every entry")
+            reaches = nwm.select_coastal_reaches(boundary, crs=crs)
+            reaches_by_key[key] = reaches
+            union.update(
+                int(i) for i in reaches.loc[reaches["role"] != "coastline", "feature_id"]
+            )
+
+        # fetch over full area
+        flow = nwm.fetch_streamflow(
+            np.array(sorted(union), dtype="int64"),
+            start=start, end=end, resolution=resolution,
+            workers=workers, cache_dir=cache_dir, store=store, retain_raw=retain_raw,
+        )
+        meta = {"label": "streamflow", "units": "m³/s", "resolution": resolution}
+
+        # slice the flow into each boundary's dataset
+        out = {}
+        for key, boundary in items:
+            reaches = reaches_by_key[key]
+            ids = set(int(i) for i in reaches.loc[reaches["role"] != "coastline", "feature_id"])
+            cols = [c for c in flow.columns if c in ids]
+            gauges = reaches.loc[
+                reaches["gaged"] == 1, ["feature_id", "gage_id", "geometry"]
+            ].reset_index(drop=True)
+            out[key] = cls(
+                "nwm", boundary=boundary, reaches=reaches,
+                flow=flow[cols], gauges=gauges, meta=dict(meta),
+            )
+        return out
 
     @classmethod
     def _load_twdb(
